@@ -32,6 +32,18 @@ class InvoiceItems implements ValidatableSection
     }
 
     /**
+     * Emit the special sales tax breakdown on every line (special sales invoices)
+     */
+    public function setSpecialTaxBreakdown(bool $enabled): self
+    {
+        foreach ($this->items as $item) {
+            $item->setSpecialTaxBreakdown($enabled);
+        }
+
+        return $this;
+    }
+
+    /**
      * Add a new line item to the invoice
      *
      * @param  string  $id  Unique serial number for this line item

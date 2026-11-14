@@ -85,6 +85,26 @@ class JoFotaraResponse
     }
 
     /**
+     * Whether the invoice had already been submitted with the same ID and UUID.
+     * The response still carries the QR code of the original submission, which
+     * makes it safe to resend an invoice after a timeout.
+     */
+    public function isAlreadySubmitted(): bool
+    {
+        return $this->getInvoiceStatus() === 'ALREADY_SUBMITTED';
+    }
+
+    /**
+     * Whether the response carries the QR code of the invoice. The integration
+     * guide requires checking it before treating the invoice as accepted, and
+     * printing it on the seller's invoice.
+     */
+    public function hasQrCode(): bool
+    {
+        return ! empty($this->getQrCode());
+    }
+
+    /**
      * Get the submitted invoice in base64 format
      */
     public function getSubmittedInvoice(): ?string

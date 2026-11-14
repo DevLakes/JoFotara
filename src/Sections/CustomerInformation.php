@@ -44,13 +44,19 @@ class CustomerInformation implements ValidatableSection
      * Set the customer's identification number
      *
      * @param  string  $id  The identification number
-     * @param  string  $type  The type of ID (NIN, PN, or TIN)
+     * @param  string  $type  The type of ID (NIN, PN, or TN; TIN is accepted as an alias of TN)
      *
      * @throws InvalidArgumentException If the ID type is invalid and validations are enabled
      */
     public function setId(string $id, string $type): self
     {
-        $validTypes = ['NIN', 'PN', 'TIN'];
+        // The integration guide names the tax number scheme "TN"; "TIN" is
+        // accepted as an alias and sent as "TN".
+        if ($type === 'TIN') {
+            $type = 'TN';
+        }
+
+        $validTypes = ['NIN', 'PN', 'TN'];
         if ($this->validationsEnabled && ! in_array($type, $validTypes)) {
             throw new InvalidArgumentException('ID type must be one of: '.implode(', ', $validTypes));
         }
@@ -87,6 +93,22 @@ class CustomerInformation implements ValidatableSection
         $this->cityCode = $code;
 
         return $this;
+    }
+
+    /**
+     * Get the customer's ID
+     */
+    public function getId(): ?string
+    {
+        return $this->id;
+    }
+
+    /**
+     * Get the customer's ID type (NIN, PN or TN)
+     */
+    public function getIdType(): ?string
+    {
+        return $this->idType;
     }
 
     /**
@@ -251,6 +273,18 @@ class CustomerInformation implements ValidatableSection
 
         if ($this->id === null || $this->idType === null) {
             throw new InvalidArgumentException('Customer ID and ID type are required');
+        }
+
+        if ($this->id !== '' && ! preg_match('/^\d+$/', $this->id)) {
+            throw new InvalidArgumentException('Customer ID must contain digits only');
+        }
+
+        if ($this->postalCode !== null && ! preg_match('/^\d{1,5}$/', $this->postalCode)) {
+            throw new InvalidArgumentException('Customer postal code must be at most 5 digits');
+        }
+
+        if ($this->phone !== null && ! preg_match('/^\d{9,14}$/', $this->phone)) {
+            throw new InvalidArgumentException('Customer phone must be 9 to 14 digits');
         }
     }
 }

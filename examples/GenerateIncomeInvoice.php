@@ -45,7 +45,7 @@ $invoice->sellerInformation()
 
 // Customer information
 $invoice->customerInformation()
-    ->setId($configs['customer_id'], 'TIN')
+    ->setId($configs['customer_id'], 'TN')
     ->setTin($configs['customer_tin'])
     ->setName($configs['customer_name'])
     ->setCityCode($configs['customer_city_code'])

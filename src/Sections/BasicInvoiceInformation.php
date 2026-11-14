@@ -25,13 +25,47 @@ class BasicInvoiceInformation implements ValidatableSection
         'special_sales' => ['cash' => '013', 'receivable' => '023'],
     ];
 
+    /**
+     * Transaction types (first digit of the InvoiceTypeCode "name" attribute),
+     * as defined in the JoFotara integration guide v1.5.
+     */
+    public const TRANSACTION_TYPES = [
+        'local' => '0',
+        'export' => '1',
+        'development_zone' => '2',
+        'transit' => '3',
+        'foreign_trade' => '4',
+        'free_zone_transfer' => '5',
+    ];
+
+    /**
+     * Currencies accepted by JoFotara (integration guide v1.5). The currency
+     * applies to the whole invoice.
+     */
+    public const SUPPORTED_CURRENCIES = [
+        'JOD', 'USD', 'EUR', 'SAR', 'AED', 'OMR', 'GBP', 'QAR', 'KWD',
+        'BHD', 'AUD', 'CAD', 'JPY', 'CHF', 'TRY', 'SYP', 'EGP', 'SEK',
+    ];
+
+    /**
+     * Payment kinds (second digit of the InvoiceTypeCode "name" attribute)
+     */
+    private const PAYMENT_KINDS = ['cash' => '1', 'receivable' => '2'];
+
+    /**
+     * Tax types (third digit of the InvoiceTypeCode "name" attribute)
+     */
+    private const TAX_TYPE_DIGITS = ['income' => '1', 'general_sales' => '2', 'special_sales' => '3'];
+
     private string $invoiceId;
 
     private string $uuid;
 
     private DateTime $issueDate;
 
-    private string $paymentMethod;
+    private ?string $paymentKind = null;
+
+    private string $transactionType = 'local';
 
     private ?string $invoiceType = null;
 
@@ -116,24 +150,75 @@ class BasicInvoiceInformation implements ValidatableSection
     }
 
     /**
-     * Get the payment method
+     * Get the invoice type ('income', 'general_sales' or 'special_sales')
      */
-    public function getPaymentMethod(): ?string
+    public function getInvoiceType(): ?string
     {
-        return $this->paymentMethod;
+        return $this->invoiceType;
     }
 
     /**
-     * Set the payment method (optional)
+     * Set the transaction type of the invoice. Defaults to 'local'.
      *
-     * Payment method codes vary based on invoice type:
-     * - Income Invoice: 011 (cash) or 021 (receivable)
-     * - General Sales Invoice: 012 (cash) or 022 (receivable)
-     * - Special Sales Invoice: 013 (cash) or 023 (receivable)
+     * @param  string  $type  One of: local, export, development_zone, transit, foreign_trade, free_zone_transfer
      *
-     * @param  string  $method  The payment method code
+     * @throws InvalidArgumentException If the transaction type is invalid
+     */
+    public function setTransactionType(string $type): self
+    {
+        if (! array_key_exists($type, self::TRANSACTION_TYPES)) {
+            throw new InvalidArgumentException('Transaction type must be one of: '.implode(', ', array_keys(self::TRANSACTION_TYPES)));
+        }
+
+        $this->transactionType = $type;
+
+        return $this;
+    }
+
+    /**
+     * Get the transaction type of the invoice
+     */
+    public function getTransactionType(): string
+    {
+        return $this->transactionType;
+    }
+
+    /**
+     * Whether the invoice is paid on account (receivable) rather than in cash
+     */
+    public function isReceivable(): bool
+    {
+        return $this->paymentKind === 'receivable';
+    }
+
+    /**
+     * Get the payment method code (the InvoiceTypeCode "name" attribute),
+     * e.g. 012 for a local cash general sales invoice
      *
-     * @throws InvalidArgumentException If the payment method is invalid or if invoice type is not set
+     * @return string|null The payment method code, or null if it is not set yet
+     */
+    public function getPaymentMethod(): ?string
+    {
+        if ($this->paymentKind === null || ! isset(self::TAX_TYPE_DIGITS[$this->invoiceType ?? ''])) {
+            return null;
+        }
+
+        return self::TRANSACTION_TYPES[$this->transactionType]
+            .self::PAYMENT_KINDS[$this->paymentKind]
+            .self::TAX_TYPE_DIGITS[$this->invoiceType];
+    }
+
+    /**
+     * Set the payment method using its three-digit code
+     *
+     * The code is made of the transaction type (0 local, 1 export, 2 development
+     * zone, 3 transit, 4 foreign trade, 5 free zone transfer), the payment kind
+     * (1 cash, 2 receivable) and the tax type (1 income, 2 general sales,
+     * 3 special sales). Setting it also sets the transaction type.
+     *
+     * @param  string  $method  The payment method code, e.g. 012 or 322
+     *
+     * @throws InvalidArgumentException If the payment method is invalid or doesn't match the invoice type
      */
     public function setPaymentMethod(string $method): self
     {
@@ -141,29 +226,23 @@ class BasicInvoiceInformation implements ValidatableSection
             throw new InvalidArgumentException('Invoice type must be set before setting payment method. Use setInvoiceType() first.');
         }
 
-        $validMethods = ['011', '021', '012', '022', '013', '023'];
-        if (! in_array($method, $validMethods)) {
-            throw new InvalidArgumentException('Payment method must be one of: 011, 021 (Income), 012, 022 (General Sales), 013, 023 (Special Sales)');
+        if (! preg_match('/^[0-5][12][123]$/', $method)) {
+            throw new InvalidArgumentException('Payment method must be one of: 011, 021 (Income), 012, 022 (General Sales), 013, 023 (Special Sales), or their export (1xx), development zone (2xx), transit (3xx), foreign trade (4xx) and free zone transfer (5xx) variants');
         }
 
         // Validate that the payment method is valid for the current invoice type
-        $validMethodsForType = array_values(self::INVOICE_TYPES[$this->invoiceType]);
-        if (! in_array($method, $validMethodsForType)) {
+        if ($method[2] !== (self::TAX_TYPE_DIGITS[$this->invoiceType] ?? null)) {
             throw new InvalidArgumentException("Payment method '$method' is not valid for invoice type '{$this->invoiceType}'");
         }
 
-        $this->paymentMethod = $method;
+        $this->transactionType = array_search($method[0], self::TRANSACTION_TYPES, true);
+        $this->paymentKind = array_search($method[1], self::PAYMENT_KINDS, true);
 
         return $this;
     }
 
     /**
-     * Set the payment method to cash
-     *
-     * The actual code depends on the invoice type:
-     * - Income Invoice: 011
-     * - General Sales Invoice: 012
-     * - Special Sales Invoice: 013
+     * Set payment method to cash
      *
      * @throws InvalidArgumentException If invoice type is not set
      */
@@ -173,18 +252,13 @@ class BasicInvoiceInformation implements ValidatableSection
             throw new InvalidArgumentException('Invoice type must be set before setting payment method. Use setInvoiceType() first.');
         }
 
-        $this->paymentMethod = self::INVOICE_TYPES[$this->invoiceType]['cash'];
+        $this->paymentKind = 'cash';
 
         return $this;
     }
 
     /**
-     * Set the payment method to receivable
-     *
-     * The actual code depends on the invoice type:
-     * - Income Invoice: 021
-     * - General Sales Invoice: 022
-     * - Special Sales Invoice: 023
+     * Set payment method to receivable
      *
      * @throws InvalidArgumentException If invoice type is not set
      */
@@ -194,9 +268,38 @@ class BasicInvoiceInformation implements ValidatableSection
             throw new InvalidArgumentException('Invoice type must be set before setting payment method. Use setInvoiceType() first.');
         }
 
-        $this->paymentMethod = self::INVOICE_TYPES[$this->invoiceType]['receivable'];
+        $this->paymentKind = 'receivable';
 
         return $this;
+    }
+
+    /**
+     * Set the invoice currency. Defaults to JOD. The currency applies to the
+     * whole invoice; a credit invoice must use the currency of the original.
+     *
+     * @param  string  $currency  ISO 4217 code, one of SUPPORTED_CURRENCIES
+     *
+     * @throws InvalidArgumentException If the currency is not accepted by JoFotara
+     */
+    public function setCurrency(string $currency): self
+    {
+        $currency = strtoupper(trim($currency));
+
+        if ($this->validationsEnabled && ! in_array($currency, self::SUPPORTED_CURRENCIES, true)) {
+            throw new InvalidArgumentException('Currency must be one of: '.implode(', ', self::SUPPORTED_CURRENCIES));
+        }
+
+        $this->currency = $currency;
+
+        return $this;
+    }
+
+    /**
+     * Get the invoice currency
+     */
+    public function getCurrency(): string
+    {
+        return $this->currency;
     }
 
     /**
@@ -279,10 +382,10 @@ class BasicInvoiceInformation implements ValidatableSection
         $xml[] = sprintf('<cbc:IssueDate>%s</cbc:IssueDate>', ($this->issueDate ?? new DateTime)->format('Y-m-d'));
 
         // Check if invoice type and payment method are set
-        if ($this->validationsEnabled && ! isset($this->paymentMethod)) {
+        if ($this->validationsEnabled && $this->getPaymentMethod() === null) {
             throw new InvalidArgumentException('Payment method is required. Use cash(), receivable(), or setPaymentMethod() to set it.');
         }
-        $xml[] = sprintf('<cbc:InvoiceTypeCode name="%s">%s</cbc:InvoiceTypeCode>', $this->escapeXml($this->paymentMethod ?? ''), $this->isCreditInvoice ? '381' : '388');
+        $xml[] = sprintf('<cbc:InvoiceTypeCode name="%s">%s</cbc:InvoiceTypeCode>', $this->escapeXml($this->getPaymentMethod() ?? ''), $this->isCreditInvoice ? '381' : '388');
 
         // Optional note
         if ($this->note !== null) {
@@ -299,7 +402,7 @@ class BasicInvoiceInformation implements ValidatableSection
             $xml[] = '    <cac:InvoiceDocumentReference>';
             $xml[] = '        <cbc:ID>'.$this->escapeXml($this->originalInvoiceId).'</cbc:ID>';
             $xml[] = '        <cbc:UUID>'.$this->escapeXml($this->originalInvoiceUuid).'</cbc:UUID>';
-            $xml[] = '        <cbc:DocumentDescription>'.number_format($this->originalFullAmount, 2).'</cbc:DocumentDescription>';
+            $xml[] = '        <cbc:DocumentDescription>'.$this->formatOriginalAmount($this->originalFullAmount).'</cbc:DocumentDescription>';
             $xml[] = '    </cac:InvoiceDocumentReference>';
             $xml[] = '</cac:BillingReference>';
         }
@@ -314,6 +417,18 @@ class BasicInvoiceInformation implements ValidatableSection
     }
 
     /**
+     * Format the original invoice total without thousands separators, keeping
+     * at least two and at most nine decimal places
+     */
+    private function formatOriginalAmount(float $amount): string
+    {
+        $formatted = rtrim(sprintf('%.9f', $amount), '0');
+        $decimals = strlen($formatted) - strpos($formatted, '.') - 1;
+
+        return $decimals < 2 ? $formatted.str_repeat('0', 2 - $decimals) : $formatted;
+    }
+
+    /**
      * Get the current state of the invoice as an array
      * This is mainly used for testing purposes
      */
@@ -324,7 +439,8 @@ class BasicInvoiceInformation implements ValidatableSection
             'uuid' => $this->uuid ?? null,
             'issueDate' => isset($this->issueDate) ? $this->issueDate->format('d-m-Y') : null,
             'invoiceType' => $this->invoiceType,
-            'paymentMethod' => $this->paymentMethod ?? null,
+            'transactionType' => $this->transactionType,
+            'paymentMethod' => $this->getPaymentMethod(),
             'note' => $this->note,
             'currency' => $this->currency,
             'invoiceCounter' => $this->invoiceCounter,
@@ -379,7 +495,7 @@ class BasicInvoiceInformation implements ValidatableSection
             }
         }
 
-        if (! isset($this->paymentMethod)) {
+        if ($this->getPaymentMethod() === null) {
             throw new InvalidArgumentException('Payment method is required. Use cash(), receivable(), or setPaymentMethod() to set it.');
         }
 

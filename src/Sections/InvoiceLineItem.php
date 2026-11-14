@@ -27,6 +27,17 @@ class InvoiceLineItem implements ValidatableSection
 
     private string $unitCode = 'PCE'; // Default to piece
 
+    private float $specialTax = 0.0;
+
+    private ?float $consumerPrice = null;
+
+    private bool $specialTaxBreakdown = false;
+
+    /**
+     * General sales tax rates accepted by JoFotara for the standard (S) category
+     */
+    public const STANDARD_TAX_RATES = [1.0, 2.0, 3.0, 4.0, 5.0, 7.0, 8.0, 10.0, 16.0];
+
     public function __construct(string $id)
     {
         $this->id = $id;
@@ -136,6 +147,83 @@ class InvoiceLineItem implements ValidatableSection
     }
 
     /**
+     * Set the special sales tax amount of this line (special sales invoices only).
+     * It is an amount entered as-is, not a percentage; the general sales tax is
+     * calculated on top of it.
+     *
+     * @param  float  $amount  The special tax amount for the whole line
+     *
+     * @throws InvalidArgumentException If the amount is negative
+     */
+    public function setSpecialTax(float $amount): self
+    {
+        if ($this->validationsEnabled && $amount < 0) {
+            throw new InvalidArgumentException('Special tax amount cannot be negative');
+        }
+        $this->specialTax = $amount;
+
+        return $this;
+    }
+
+    /**
+     * Get the special sales tax amount of this line
+     */
+    public function getSpecialTax(): float
+    {
+        return $this->specialTax;
+    }
+
+    /**
+     * Set the consumer price of one unit (general and special sales invoices,
+     * for taxpayers who were granted the consumer price permission).
+     *
+     * The consumer price is the final price to the end consumer. It must not be
+     * lower than the unit price; when it is higher, general sales tax is
+     * calculated on quantity * consumer price instead of the line amount.
+     *
+     * @param  float  $price  The consumer price per unit
+     *
+     * @throws InvalidArgumentException If the price is negative
+     */
+    public function setConsumerPrice(float $price): self
+    {
+        if ($this->validationsEnabled && $price < 0) {
+            throw new InvalidArgumentException('Consumer price cannot be negative');
+        }
+        $this->consumerPrice = $price;
+
+        return $this;
+    }
+
+    /**
+     * Get the consumer price per unit, or null when not used
+     */
+    public function getConsumerPrice(): ?float
+    {
+        return $this->consumerPrice;
+    }
+
+    /**
+     * Get the tax category (S, Z or O)
+     */
+    public function getTaxCategory(): string
+    {
+        return $this->taxCategory;
+    }
+
+    /**
+     * Emit the special sales tax breakdown (a special tax subtotal followed by
+     * the general tax subtotal) even when the special tax amount is zero.
+     * The service enables this for special sales invoices.
+     */
+    public function setSpecialTaxBreakdown(bool $enabled): self
+    {
+        $this->specialTaxBreakdown = $enabled;
+
+        return $this;
+    }
+
+    /**
      * Get the discount amount for this item
      */
     public function getDiscount(): float
@@ -213,25 +301,36 @@ class InvoiceLineItem implements ValidatableSection
     }
 
     /**
-     * Calculate the tax amount for this line item
+     * Calculate the general sales tax amount for this line item
+     *
+     * The taxable base is the line amount after discount, or quantity * consumer
+     * price when a consumer price higher than the unit price is set, plus the
+     * special tax amount if any.
      *
      * @throws InvalidArgumentException If quantity or unit price is not set
      */
     public function getTaxAmount(): float
     {
-        $amountAfterDiscount = $this->getAmountAfterDiscount();
+        if ($this->taxCategory !== 'S') {
+            return 0;
+        }
 
-        return $this->taxCategory === 'S' ? $amountAfterDiscount * ($this->taxPercent / 100) : 0;
+        $base = $this->getAmountAfterDiscount();
+        if ($this->consumerPrice !== null && $this->consumerPrice > $this->unitPrice) {
+            $base = $this->quantity * $this->consumerPrice;
+        }
+
+        return ($base + $this->specialTax) * ($this->taxPercent / 100);
     }
 
     /**
-     * Calculate the total amount including tax
+     * Calculate the total amount including special and general sales tax
      *
      * @throws InvalidArgumentException If quantity or unit price is not set
      */
     public function getTaxInclusiveAmount(): float
     {
-        return $this->getAmountAfterDiscount() + $this->getTaxAmount();
+        return $this->getAmountAfterDiscount() + $this->specialTax + $this->getTaxAmount();
     }
 
     /**
@@ -270,7 +369,24 @@ class InvoiceLineItem implements ValidatableSection
         $xml[] = '    <cac:TaxTotal>';
         $xml[] = sprintf('        <cbc:TaxAmount currencyID="JO">%.9f</cbc:TaxAmount>', $taxAmount);
         $xml[] = sprintf('        <cbc:RoundingAmount currencyID="JO">%.9f</cbc:RoundingAmount>', $taxInclusiveAmount);
+        $withSpecialTax = $this->specialTaxBreakdown || $this->specialTax > 0;
+        if ($withSpecialTax) {
+            // Special sales tax subtotal (an amount, no percentage)
+            $xml[] = '        <cac:TaxSubtotal>';
+            $xml[] = sprintf('            <cbc:TaxableAmount currencyID="JO">%.9f</cbc:TaxableAmount>', $taxExclusiveAmount);
+            $xml[] = sprintf('            <cbc:TaxAmount currencyID="JO">%.9f</cbc:TaxAmount>', $this->specialTax);
+            $xml[] = '            <cac:TaxCategory>';
+            $xml[] = '                <cbc:ID schemeAgencyID="6" schemeID="UN/ECE 5305">S</cbc:ID>';
+            $xml[] = '                <cac:TaxScheme>';
+            $xml[] = '                    <cbc:ID schemeAgencyID="6" schemeID="UN/ECE 5153">OTH</cbc:ID>';
+            $xml[] = '                </cac:TaxScheme>';
+            $xml[] = '            </cac:TaxCategory>';
+            $xml[] = '        </cac:TaxSubtotal>';
+        }
         $xml[] = '        <cac:TaxSubtotal>';
+        if ($withSpecialTax) {
+            $xml[] = sprintf('            <cbc:TaxableAmount currencyID="JO">%.9f</cbc:TaxableAmount>', $taxExclusiveAmount);
+        }
         $xml[] = sprintf('            <cbc:TaxAmount currencyID="JO">%.9f</cbc:TaxAmount>', $taxAmount);
         $xml[] = '            <cac:TaxCategory>';
         $xml[] = sprintf('                <cbc:ID schemeAgencyID="6" schemeID="UN/ECE 5305">%s</cbc:ID>',
@@ -298,6 +414,13 @@ class InvoiceLineItem implements ValidatableSection
         $xml[] = sprintf('            <cbc:Amount currencyID="JO">%.9f</cbc:Amount>', $this->discount);
         $xml[] = '        </cac:AllowanceCharge>';
         $xml[] = '    </cac:Price>';
+
+        // Consumer price
+        if ($this->consumerPrice !== null) {
+            $xml[] = '    <cac:ItemPriceExtension>';
+            $xml[] = sprintf('        <cbc:Amount currencyID="JO">%.9f</cbc:Amount>', $this->consumerPrice);
+            $xml[] = '    </cac:ItemPriceExtension>';
+        }
         $xml[] = '</cac:InvoiceLine>';
 
         return $this->normalizeXml(implode("\n", $xml));
@@ -317,6 +440,8 @@ class InvoiceLineItem implements ValidatableSection
             'taxCategory' => $this->taxCategory,
             'taxPercent' => $this->taxPercent,
             'unitCode' => $this->unitCode,
+            'specialTax' => $this->specialTax,
+            'consumerPrice' => $this->consumerPrice,
         ];
     }
 
@@ -369,6 +494,17 @@ class InvoiceLineItem implements ValidatableSection
         // Validate tax percent for standard rate
         if ($this->taxCategory === 'S' && ($this->taxPercent <= 0 || $this->taxPercent > 16)) {
             throw new InvalidArgumentException('Tax percentage must be between 0 and 16 for standard rate');
+        }
+        if ($this->taxCategory === 'S' && ! in_array($this->taxPercent, self::STANDARD_TAX_RATES, true)) {
+            throw new InvalidArgumentException('Tax percentage must be one of: 1, 2, 3, 4, 5, 7, 8, 10, 16');
+        }
+
+        // Validate special tax and consumer price
+        if ($this->specialTax < 0) {
+            throw new InvalidArgumentException('Item special tax cannot be negative');
+        }
+        if ($this->consumerPrice !== null && $this->consumerPrice < $this->unitPrice) {
+            throw new InvalidArgumentException('Item consumer price cannot be lower than the unit price');
         }
     }
 }

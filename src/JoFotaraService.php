@@ -17,6 +17,12 @@ class JoFotaraService
 {
     private const API_URL = 'https://backend.jofotara.gov.jo/core/invoices/';
 
+    /**
+     * Maximum rounding difference accepted between the invoice totals and the
+     * values calculated from the line items
+     */
+    private const ROUNDING_TOLERANCE = 0.001;
+
     private BasicInvoiceInformation $basicInfo;
 
     private ?SellerInformation $sellerInfo = null;
@@ -139,25 +145,14 @@ class JoFotaraService
 
             // If we have items, calculate totals from them
             if ($this->items && count($this->items->getItems()) > 0) {
-                $amountBeforeDiscount = 0.0;
-                $totalTaxAmount = 0.0;
-                $discountTotalAmount = 0.0;
-
-                foreach ($this->items->getItems() as $item) {
-                    $amountBeforeDiscount += $item->getAmountBeforeDiscount();
-                    $totalTaxAmount += $item->getTaxAmount();
-                    $discountTotalAmount += $item->getDiscount();
-                }
-
-                $taxInclusiveAmount = $amountBeforeDiscount - $discountTotalAmount + $totalTaxAmount;
-                $payableAmount = $taxInclusiveAmount;
+                $totals = $this->calculateTotalsFromItems();
 
                 $this->invoiceTotals
-                    ->setTaxExclusiveAmount($amountBeforeDiscount)
-                    ->setDiscountTotalAmount($discountTotalAmount)
-                    ->setTaxInclusiveAmount($taxInclusiveAmount)
-                    ->setTaxTotalAmount($totalTaxAmount)
-                    ->setPayableAmount($payableAmount);
+                    ->setTaxExclusiveAmount($totals['taxExclusiveAmount'])
+                    ->setDiscountTotalAmount($totals['discountTotalAmount'])
+                    ->setTaxInclusiveAmount($totals['taxInclusiveAmount'])
+                    ->setTaxTotalAmount($totals['taxTotalAmount'])
+                    ->setPayableAmount($totals['payableAmount']);
             }
         }
 
@@ -223,57 +218,113 @@ class JoFotaraService
         $this->items->validateSection();
         $this->invoiceTotals->validateSection();
 
-        // Validate customer name requirement (Cross-section validation)
-        if ($this->customerInfo) {
-            $paymentMethod = $this->basicInfo->getPaymentMethod();
-            // Check if receivable (codes: 021, 022, 023)
-            $isReceivable = in_array($paymentMethod, ['021', '022', '023']);
+        $this->validateCustomerRequirements();
+        $this->validateItemsAgainstInvoiceType();
 
-            // Check threshold
-            $payableAmount = $this->invoiceTotals->getPayableAmount();
-            $isOverThreshold = $payableAmount > 10000;
+        // Cross-section validation (totals matching items)
+        if (count($this->items->getItems()) > 0) {
+            $providedTotals = $this->invoiceTotals->toArray();
 
-            if (($isReceivable || $isOverThreshold) && empty($this->customerInfo->getName())) {
-                throw new InvalidArgumentException('Customer name is required for receivable invoices or invoices over 10000 JOD');
+            foreach ($this->calculateTotalsFromItems() as $key => $expected) {
+                // The integration guide allows a rounding difference of up to 0.001
+                if (abs($providedTotals[$key] - $expected) > self::ROUNDING_TOLERANCE) {
+                    throw new InvalidArgumentException('Invoice totals do not match calculated values from line items');
+                }
+            }
+        }
+    }
+
+    /**
+     * Calculate the invoice totals from the line items
+     *
+     * @return array{taxExclusiveAmount: float, taxInclusiveAmount: float, discountTotalAmount: float, taxTotalAmount: float, payableAmount: float}
+     */
+    private function calculateTotalsFromItems(): array
+    {
+        $amountBeforeDiscount = 0.0;
+        $taxTotalAmount = 0.0;
+        $specialTaxTotalAmount = 0.0;
+        $discountTotalAmount = 0.0;
+
+        foreach ($this->items->getItems() as $item) {
+            $amountBeforeDiscount += $item->getAmountBeforeDiscount();
+            $taxTotalAmount += $item->getTaxAmount();
+            $specialTaxTotalAmount += $item->getSpecialTax();
+            $discountTotalAmount += $item->getDiscount();
+        }
+
+        // Invoice total = total before discount - discounts + special tax + general tax
+        $taxInclusiveAmount = $amountBeforeDiscount - $discountTotalAmount + $specialTaxTotalAmount + $taxTotalAmount;
+
+        return [
+            'taxExclusiveAmount' => round($amountBeforeDiscount, 9),
+            'taxInclusiveAmount' => round($taxInclusiveAmount, 9),
+            'discountTotalAmount' => round($discountTotalAmount, 9),
+            // The invoice-level tax total carries the general sales tax only
+            'taxTotalAmount' => round($taxTotalAmount, 9),
+            'payableAmount' => round($taxInclusiveAmount, 9),
+        ];
+    }
+
+    /**
+     * Validate the buyer details that depend on the invoice type and total
+     *
+     * @throws InvalidArgumentException If a required buyer detail is missing
+     */
+    private function validateCustomerRequirements(): void
+    {
+        // The buyer name is mandatory for receivable invoices and for cash
+        // invoices above 10,000 JOD. For other currencies the guide asks for the
+        // JOD equivalent, which the SDK cannot compute, so only JOD is checked.
+        $isOverThreshold = $this->basicInfo->getCurrency() === 'JOD'
+            && $this->invoiceTotals->getPayableAmount() > 10000;
+
+        if (($this->basicInfo->isReceivable() || $isOverThreshold) && empty($this->customerInfo->getName())) {
+            throw new InvalidArgumentException('Customer name is required for receivable invoices or invoices over 10000 JOD');
+        }
+
+        // Development zone invoices require the buyer's tax number
+        if ($this->basicInfo->getTransactionType() === 'development_zone'
+            && ($this->customerInfo->getIdType() !== 'TN' || empty($this->customerInfo->getId()))) {
+            throw new InvalidArgumentException('Customer tax number (ID type TN) is required for development zone invoices');
+        }
+    }
+
+    /**
+     * Validate the line items against the rules of the invoice type
+     *
+     * @throws InvalidArgumentException If a line item breaks a rule of the invoice type
+     */
+    private function validateItemsAgainstInvoiceType(): void
+    {
+        $invoiceType = $this->basicInfo->getInvoiceType();
+        $transactionType = $this->basicInfo->getTransactionType();
+        $items = $this->items->getItems();
+        $itemsWithConsumerPrice = 0;
+
+        foreach ($items as $item) {
+            // Export, development zone, transit, foreign trade and free zone
+            // transfer sales invoices must be zero-rated (category O) on every line
+            if ($invoiceType !== 'income' && $transactionType !== 'local' && $item->getTaxCategory() !== 'O') {
+                throw new InvalidArgumentException("All items must be zero-rated (use zeroTax()) for '$transactionType' invoices");
+            }
+
+            if ($invoiceType !== 'special_sales' && $item->getSpecialTax() > 0) {
+                throw new InvalidArgumentException('Special tax is only allowed on special sales invoices');
+            }
+
+            if ($item->getConsumerPrice() !== null) {
+                $itemsWithConsumerPrice++;
             }
         }
 
-        // Cross-section validation (totals matching items) - only if validations are enabled
-        if ($this->validationsEnabled && $this->items && $this->invoiceTotals) {
-            $items = $this->items->getItems();
-            if (count($items) > 0) {
-                $calculatedTotals = new InvoiceTotals;
+        if ($itemsWithConsumerPrice > 0) {
+            if ($invoiceType === 'income') {
+                throw new InvalidArgumentException('Consumer price is only allowed on general sales and special sales invoices');
+            }
 
-                $amountBeforeDiscount = 0.0;
-                $taxTotalAmount = 0.0;
-                $discountTotalAmount = 0.0;
-
-                foreach ($items as $item) {
-                    $amountBeforeDiscount += $item->getAmountBeforeDiscount();
-                    $taxTotalAmount += $item->getTaxAmount();
-                    $discountTotalAmount += $item->getDiscount();
-                }
-
-                $taxInclusiveAmount = $amountBeforeDiscount - $discountTotalAmount + $taxTotalAmount;
-                $payableAmount = $taxInclusiveAmount;
-
-                $calculatedTotals
-                    // Set the base amount
-                    ->setTaxExclusiveAmount($amountBeforeDiscount)
-                    // Set the discount amount
-                    ->setDiscountTotalAmount($discountTotalAmount)
-                    // Set the tax amount
-                    ->setTaxTotalAmount($taxTotalAmount)
-                    // Set the final payable amount
-                    ->setTaxInclusiveAmount($taxInclusiveAmount)
-                    ->setPayableAmount($payableAmount);
-
-                $providedTotals = $this->invoiceTotals->toArray();
-                $expectedTotals = $calculatedTotals->toArray();
-
-                if ($providedTotals !== $expectedTotals) {
-                    throw new InvalidArgumentException('Invoice totals do not match calculated values from line items');
-                }
+            if ($itemsWithConsumerPrice !== count($items)) {
+                throw new InvalidArgumentException('Consumer price must be set on all items of the invoice or on none of them');
             }
         }
     }
@@ -294,6 +345,9 @@ class JoFotaraService
 
         // Add UBLVersionID
         $xml[] = '<cbc:UBLVersionID>2.1</cbc:UBLVersionID>';
+
+        // Add ProfileID as required by the integration guide
+        $xml[] = '<cbc:ProfileID>reporting:1.0</cbc:ProfileID>';
 
         // Add basic information
         $xml[] = $this->basicInfo->toXml();
@@ -323,6 +377,7 @@ class JoFotaraService
 
         // Add items if set
         if ($this->items) {
+            $this->items->setSpecialTaxBreakdown($this->basicInfo->getInvoiceType() === 'special_sales');
             $xml[] = $this->items->toXml();
         }
 
@@ -385,10 +440,16 @@ class JoFotaraService
 
         // For empty responses or parsing errors, provide appropriate error message
         if (empty($response) || json_last_error() !== JSON_ERROR_NONE) {
+            $hint = match ($statusCode) {
+                500 => 'Internal server error. Check the seller TIN, the income source sequence, the client ID and secret, and that tax rates are among the approved rates',
+                504 => 'Gateway timeout. JoFotara could not be reached; retry with the same invoice ID and UUID',
+                default => null,
+            };
+
             $result = [
-                'error' => empty($response) ?
+                'error' => $hint ?? (empty($response) ?
                     'Empty response from API' :
-                    'Invalid JSON response from API: '.json_last_error_msg(),
+                    'Invalid JSON response from API: '.json_last_error_msg()),
                 'raw_response' => $response,
             ];
         }

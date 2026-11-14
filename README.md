@@ -39,7 +39,7 @@ $invoice->sellerInformation()
     ->setTin('123456789');
 
 $invoice->customerInformation()
-    ->setId('987654321', 'TIN')
+    ->setId('987654321', 'TN')
     ->setName('Customer Name');
 
 $invoice->items()
@@ -54,6 +54,8 @@ $response = $invoice->send();
 
 ## 📖 Documentation
 
+The SDK follows version 1.5 (May 2026) of the official technical integration guide, available in [docs/integration-guide-v1.5-ar.pdf](docs/integration-guide-v1.5-ar.pdf) (Arabic). The earlier English edition is kept in [docs/integration-docs.pdf](docs/integration-docs.pdf).
+
 ### Invoice Types
 
 The SDK supports all JoFotara invoice types:
@@ -64,7 +66,7 @@ $invoice->basicInformation()
     ->setInvoiceType('general_sales')
     ->cash();  // or ->receivable()
 
-// 2. Special Sales Invoice (e.g., exports)
+// 2. Special Sales Invoice (goods subject to special sales tax)
 $invoice->basicInformation()
     ->setInvoiceType('special_sales')
     ->cash();
@@ -104,9 +106,43 @@ $invoice->basicInformation()
     ->receivable();
 ```
 
+### Transaction Types
+
+Since version 1.5 of the integration guide, every invoice type can also be issued as an export, development zone, transit, foreign trade or free zone transfer invoice. The default is `local`.
+
+```php
+$invoice->basicInformation()
+    ->setInvoiceType('general_sales')
+    ->setTransactionType('export')   // local, export, development_zone, transit, foreign_trade, free_zone_transfer
+    ->receivable();                  // code: 122
+```
+
+| Transaction type     | Income (cash / receivable) | General sales | Special sales | Rules |
+|----------------------|----------------------------|---------------|---------------|-------|
+| `local`              | 011 / 021                  | 012 / 022     | 013 / 023     | - |
+| `export`             | 111 / 121                  | 112 / 122     | 113 / 123     | Sales invoices: every item zero-rated |
+| `development_zone`   | 211 / 221                  | 212 / 222     | 213 / 223     | Buyer tax number (`TN`) required; sales invoices: every item zero-rated |
+| `transit`            | 311 / 321                  | 312 / 322     | 313 / 323     | Sales invoices: every item zero-rated |
+| `foreign_trade`      | 411 / 421                  | 412 / 422     | 413 / 423     | Sales invoices: every item zero-rated |
+| `free_zone_transfer` | 511 / 521                  | 512 / 522     | 513 / 523     | Sales invoices: every item zero-rated |
+
+"Zero-rated" means `->zeroTax()` on every item. A credit invoice must use the same transaction type and currency as the original invoice. You can also pass the code directly with `->setPaymentMethod('322')`.
+
+### Currencies
+
+Invoices are issued in JOD by default. The currency applies to the whole invoice:
+
+```php
+$invoice->basicInformation()->setCurrency('USD');
+```
+
+Supported: JOD, USD, EUR, SAR, AED, OMR, GBP, QAR, KWD, BHD, AUD, CAD, JPY, CHF, TRY, SYP, EGP, SEK.
+
+> The buyer name is mandatory for cash invoices above 10,000 JOD or the equivalent in a foreign currency. The SDK enforces this for JOD invoices only; check the equivalent yourself for other currencies.
+
 ### Tax Handling
 
-The SDK supports various tax scenarios:
+The SDK supports various tax scenarios. Accepted general sales tax rates are 1, 2, 3, 4, 5, 7, 8, 10 and 16.
 
 ```php
 // 1. Standard VAT (16%)
@@ -137,6 +173,26 @@ $invoice->items()
     ->setUnitPrice(200.0)
     ->setDiscount(20.0)
     ->tax(16);
+
+// 5. Special sales tax (special sales invoices only)
+// The special tax is an amount for the whole line; general tax is applied on top of it
+$invoice->items()
+    ->addItem('5')
+    ->setQuantity(10)
+    ->setUnitPrice(50.0)
+    ->setDiscount(5.0)
+    ->setSpecialTax(10.0)
+    ->tax(16);
+
+// 6. Consumer price (general and special sales, requires the permission from ISTD)
+// Must be set on every item and cannot be lower than the unit price. When it is
+// higher, general tax is calculated on quantity * consumer price.
+$invoice->items()
+    ->addItem('6')
+    ->setQuantity(10)
+    ->setUnitPrice(5.0)
+    ->setConsumerPrice(6.0)
+    ->tax(16);
 ```
 
 ### Response Handling
@@ -144,18 +200,21 @@ $invoice->items()
 ```php
 $response = $invoice->send();
 
-if ($response->isSuccessful()) {
-    // Invoice accepted
-    $data = $response->getData();
-    echo "Invoice ID: {$data['invoice_id']}\n";
-    echo "Status: {$data['status']}\n";
+if ($response->isSuccess()) {
+    // SUBMITTED, or ALREADY_SUBMITTED when the same ID and UUID were sent before
+    echo "Status: {$response->getInvoiceStatus()}\n";
+    echo "Invoice number: {$response->getInvoiceNumber()}\n";
+    echo "UUID: {$response->getInvoiceUuid()}\n";
+
+    // The QR code must be present and printed on the invoice
+    $qrCode = $response->getQrCode();
 } else {
-    // Handle errors
-    foreach ($response->getErrors() as $error) {
-        echo "Error: {$error['message']}\n";
-    }
+    // NOT_SUBMITTED: the HTTP status is not 200 and the errors explain why
+    echo $response->getErrorSummary();
 }
 ```
+
+Do not rely on the HTTP status alone; `isSuccess()` also checks `EINV_STATUS`. Store the invoice ID, UUID, QR code and status. If sending fails or times out, send again with the **same** ID and UUID (never generate a new UUID): JoFotara answers `ALREADY_SUBMITTED` with the original QR code, which `isAlreadySubmitted()` reports.
 
 ## 🧪 Testing
 
@@ -228,11 +287,11 @@ $invoice->sellerInformation()
 
 ```php
 $invoice->customerInformation()
-    ->setId('987654321', 'TIN')        // Required: ID and type (TIN, NIN, or PN)
+    ->setId('987654321', 'TN')         // Required: ID (digits only) and type (TN, NIN, or PN)
     ->setName('Customer Name')          // Required for receivables
-    ->setPostalCode('11937')           // Optional
+    ->setPostalCode('11937')           // Optional: up to 5 digits
     ->setCityCode('JO-IR')             // Optional: Jordan city code
-    ->setPhone('0791234567')           // Optional
+    ->setPhone('0791234567')           // Optional: 9 to 14 digits
     ->setTin('987654321');             // Optional
 ```
 
@@ -265,7 +324,7 @@ $invoice->sellerInformation()
 
 // Set buyer information
 $invoice->customerInformation()
-    ->setId('987654321', 'TIN')
+    ->setId('987654321', 'TN')
     ->setName('Customer Name');
 
 // Set supplier income source (required)
