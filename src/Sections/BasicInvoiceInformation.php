@@ -18,6 +18,9 @@ class BasicInvoiceInformation implements ValidatableSection
      * - Income Invoice: For taxpayers not registered for sales tax
      * - General Sales Invoice: For taxpayers registered for sales tax (VAT)
      * - Special Sales Invoice: For taxpayers subject to special sales tax
+     *
+     * Local codes only; kept for backward compatibility. The code is now built
+     * from the transaction type, payment kind and tax type (see getPaymentMethod()).
      */
     public const INVOICE_TYPES = [
         'income' => ['cash' => '011', 'receivable' => '021'],
@@ -141,7 +144,7 @@ class BasicInvoiceInformation implements ValidatableSection
      */
     public function setInvoiceType(string $type): self
     {
-        if ($this->validationsEnabled && ! array_key_exists($type, self::INVOICE_TYPES)) {
+        if ($this->validationsEnabled && ! array_key_exists($type, self::TAX_TYPE_DIGITS)) {
             throw new InvalidArgumentException("Invoice type must be one of: 'income', 'general_sales', 'special_sales'");
         }
         $this->invoiceType = $type;
@@ -242,19 +245,29 @@ class BasicInvoiceInformation implements ValidatableSection
     }
 
     /**
+     * Set the payment kind ('cash' or 'receivable')
+     *
+     * @throws InvalidArgumentException If invoice type is not set
+     */
+    private function setPaymentKind(string $kind): self
+    {
+        if ($this->invoiceType === null) {
+            throw new InvalidArgumentException('Invoice type must be set before setting payment method. Use setInvoiceType() first.');
+        }
+
+        $this->paymentKind = $kind;
+
+        return $this;
+    }
+
+    /**
      * Set payment method to cash
      *
      * @throws InvalidArgumentException If invoice type is not set
      */
     public function cash(): self
     {
-        if ($this->invoiceType === null) {
-            throw new InvalidArgumentException('Invoice type must be set before setting payment method. Use setInvoiceType() first.');
-        }
-
-        $this->paymentKind = 'cash';
-
-        return $this;
+        return $this->setPaymentKind('cash');
     }
 
     /**
@@ -264,13 +277,7 @@ class BasicInvoiceInformation implements ValidatableSection
      */
     public function receivable(): self
     {
-        if ($this->invoiceType === null) {
-            throw new InvalidArgumentException('Invoice type must be set before setting payment method. Use setInvoiceType() first.');
-        }
-
-        $this->paymentKind = 'receivable';
-
-        return $this;
+        return $this->setPaymentKind('receivable');
     }
 
     /**
@@ -422,10 +429,7 @@ class BasicInvoiceInformation implements ValidatableSection
      */
     private function formatOriginalAmount(float $amount): string
     {
-        $formatted = rtrim(sprintf('%.9f', $amount), '0');
-        $decimals = strlen($formatted) - strpos($formatted, '.') - 1;
-
-        return $decimals < 2 ? $formatted.str_repeat('0', 2 - $decimals) : $formatted;
+        return preg_replace('/0{1,7}$/', '', sprintf('%.9f', $amount));
     }
 
     /**

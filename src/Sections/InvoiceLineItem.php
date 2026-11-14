@@ -31,8 +31,6 @@ class InvoiceLineItem implements ValidatableSection
 
     private ?float $consumerPrice = null;
 
-    private bool $specialTaxBreakdown = false;
-
     /**
      * General sales tax rates accepted by JoFotara for the standard (S) category
      */
@@ -212,18 +210,6 @@ class InvoiceLineItem implements ValidatableSection
     }
 
     /**
-     * Emit the special sales tax breakdown (a special tax subtotal followed by
-     * the general tax subtotal) even when the special tax amount is zero.
-     * The service enables this for special sales invoices.
-     */
-    public function setSpecialTaxBreakdown(bool $enabled): self
-    {
-        $this->specialTaxBreakdown = $enabled;
-
-        return $this;
-    }
-
-    /**
      * Get the discount amount for this item
      */
     public function getDiscount(): float
@@ -336,9 +322,11 @@ class InvoiceLineItem implements ValidatableSection
     /**
      * Convert the line item to XML
      *
+     * @param  bool  $specialTaxBreakdown  Emit the special tax subtotal even when the special tax is zero (special sales invoices)
+     *
      * @throws InvalidArgumentException If required fields are missing
      */
-    public function toXml(): string
+    public function toXml(bool $specialTaxBreakdown = false): string
     {
         if (! isset($this->quantity)) {
             throw new InvalidArgumentException('Quantity is required');
@@ -369,7 +357,7 @@ class InvoiceLineItem implements ValidatableSection
         $xml[] = '    <cac:TaxTotal>';
         $xml[] = sprintf('        <cbc:TaxAmount currencyID="JO">%.9f</cbc:TaxAmount>', $taxAmount);
         $xml[] = sprintf('        <cbc:RoundingAmount currencyID="JO">%.9f</cbc:RoundingAmount>', $taxInclusiveAmount);
-        $withSpecialTax = $this->specialTaxBreakdown || $this->specialTax > 0;
+        $withSpecialTax = $specialTaxBreakdown || $this->specialTax > 0;
         if ($withSpecialTax) {
             // Special sales tax subtotal (an amount, no percentage)
             $xml[] = '        <cac:TaxSubtotal>';
@@ -496,7 +484,7 @@ class InvoiceLineItem implements ValidatableSection
             throw new InvalidArgumentException('Tax percentage must be between 0 and 16 for standard rate');
         }
         if ($this->taxCategory === 'S' && ! in_array($this->taxPercent, self::STANDARD_TAX_RATES, true)) {
-            throw new InvalidArgumentException('Tax percentage must be one of: 1, 2, 3, 4, 5, 7, 8, 10, 16');
+            throw new InvalidArgumentException('Tax percentage must be one of: '.implode(', ', self::STANDARD_TAX_RATES));
         }
 
         // Validate special tax and consumer price

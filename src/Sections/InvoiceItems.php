@@ -32,18 +32,6 @@ class InvoiceItems implements ValidatableSection
     }
 
     /**
-     * Emit the special sales tax breakdown on every line (special sales invoices)
-     */
-    public function setSpecialTaxBreakdown(bool $enabled): self
-    {
-        foreach ($this->items as $item) {
-            $item->setSpecialTaxBreakdown($enabled);
-        }
-
-        return $this;
-    }
-
-    /**
      * Add a new line item to the invoice
      *
      * @param  string  $id  Unique serial number for this line item
@@ -80,7 +68,7 @@ class InvoiceItems implements ValidatableSection
      *
      * @throws InvalidArgumentException If no items exist and validations are enabled
      */
-    public function toXml(): string
+    public function toXml(bool $specialTaxBreakdown = false): string
     {
         if ($this->validationsEnabled && empty($this->items)) {
             throw new InvalidArgumentException('At least one invoice item is required');
@@ -88,7 +76,7 @@ class InvoiceItems implements ValidatableSection
 
         $xml = [];
         foreach ($this->items as $item) {
-            $xml[] = $item->toXml();
+            $xml[] = $item->toXml($specialTaxBreakdown);
         }
 
         return implode("\n", $xml);

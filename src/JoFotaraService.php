@@ -377,8 +377,8 @@ class JoFotaraService
 
         // Add items if set
         if ($this->items) {
-            $this->items->setSpecialTaxBreakdown($this->basicInfo->getInvoiceType() === 'special_sales');
-            $xml[] = $this->items->toXml();
+            // Special sales lines always carry the special tax subtotal
+            $xml[] = $this->items->toXml($this->basicInfo->getInvoiceType() === 'special_sales');
         }
 
         // Close root element
@@ -440,16 +440,13 @@ class JoFotaraService
 
         // For empty responses or parsing errors, provide appropriate error message
         if (empty($response) || json_last_error() !== JSON_ERROR_NONE) {
-            $hint = match ($statusCode) {
-                500 => 'Internal server error. Check the seller TIN, the income source sequence, the client ID and secret, and that tax rates are among the approved rates',
-                504 => 'Gateway timeout. JoFotara could not be reached; retry with the same invoice ID and UUID',
-                default => null,
-            };
-
             $result = [
-                'error' => $hint ?? (empty($response) ?
-                    'Empty response from API' :
-                    'Invalid JSON response from API: '.json_last_error_msg()),
+                'error' => match (true) {
+                    $statusCode === 500 => 'Internal server error. Check the seller TIN, the income source sequence, the client ID and secret, and that tax rates are among the approved rates',
+                    $statusCode === 504 => 'Gateway timeout. JoFotara could not be reached; retry with the same invoice ID and UUID',
+                    empty($response) => 'Empty response from API',
+                    default => 'Invalid JSON response from API: '.json_last_error_msg(),
+                },
                 'raw_response' => $response,
             ];
         }
