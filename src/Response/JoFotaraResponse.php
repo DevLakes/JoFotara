@@ -8,6 +8,35 @@ namespace JBadarneh\JoFotara\Response;
 class JoFotaraResponse
 {
     /**
+     * HTTP status codes with a known meaning, per the JoFotara integration
+     * guide. This is the single source for their error code, message and
+     * category.
+     *
+     * A status marked "discardBody" is reported from this table alone: whatever
+     * body the API returned is ignored.
+     */
+    private const STATUS_ERRORS = [
+        403 => [
+            'code' => 'AUTH_ERROR',
+            'message' => 'Authentication failed. Please check your client ID and secret.',
+            'category' => 'Authentication',
+            'discardBody' => true,
+        ],
+        500 => [
+            'code' => 'API_ERROR',
+            'message' => 'Internal server error. Check the seller TIN, the income source sequence, the client ID and secret, and that tax rates are among the approved rates',
+            'category' => 'API Validation',
+            'discardBody' => false,
+        ],
+        504 => [
+            'code' => 'API_ERROR',
+            'message' => 'Gateway timeout. JoFotara could not be reached; retry with the same invoice ID and UUID',
+            'category' => 'API Validation',
+            'discardBody' => false,
+        ],
+    ];
+
+    /**
      * The raw response data from the API
      */
     private array $rawResponse;
@@ -21,6 +50,41 @@ class JoFotaraResponse
      * The HTTP status code from the API response
      */
     private int $statusCode;
+
+    /**
+     * Build a response from the raw HTTP body and status code returned by the API
+     *
+     * Never throws: a body that is empty, is not valid JSON or does not decode
+     * to an object or array becomes an error response that keeps the body under
+     * "raw_response".
+     *
+     * @param  string|false|null  $body  The raw response body
+     * @param  int  $statusCode  The HTTP status code
+     */
+    public static function fromHttpResponse(string|false|null $body, int $statusCode): self
+    {
+        $known = self::STATUS_ERRORS[$statusCode] ?? null;
+
+        if ($known !== null && $known['discardBody']) {
+            return new self(['error' => $known['message'], 'code' => $known['code']], $statusCode);
+        }
+
+        $decoded = empty($body) ? null : json_decode($body, true);
+
+        if (is_array($decoded)) {
+            return new self($decoded, $statusCode);
+        }
+
+        return new self([
+            'error' => match (true) {
+                $known !== null => $known['message'],
+                empty($body) => 'Empty response from API',
+                json_last_error() !== JSON_ERROR_NONE => 'Invalid JSON response from API: '.json_last_error_msg(),
+                default => 'Unexpected response from API',
+            },
+            'raw_response' => $body,
+        ], $statusCode);
+    }
 
     /**
      * Create a new JoFotaraResponse instance
@@ -175,12 +239,14 @@ class JoFotaraResponse
      */
     public function getErrors(): array
     {
-        // Handle authentication errors (403)
-        if ($this->statusCode === 403) {
+        $known = self::STATUS_ERRORS[$this->statusCode] ?? null;
+
+        // Statuses reported from the table alone, e.g. authentication errors (403)
+        if ($known !== null && $known['discardBody']) {
             return [[
-                'code' => $this->rawResponse['code'] ?? 'AUTH_ERROR',
-                'message' => $this->rawResponse['error'] ?? 'Authentication failed. Please check your client ID and secret.',
-                'category' => 'Authentication',
+                'code' => $this->rawResponse['code'] ?? $known['code'],
+                'message' => $this->rawResponse['error'] ?? $known['message'],
+                'category' => $known['category'],
             ]];
         }
 
@@ -197,9 +263,9 @@ class JoFotaraResponse
             // If there's a specific error structure, use it
             if (isset($this->rawResponse['error']) || isset($this->rawResponse['errors'])) {
                 $error = isset($this->rawResponse['errors']) ? $this->rawResponse['errors'] : [[
-                    'code' => $this->rawResponse['code'] ?? 'API_ERROR',
+                    'code' => $this->rawResponse['code'] ?? $known['code'] ?? 'API_ERROR',
                     'message' => $this->rawResponse['error'] ?? json_encode($this->rawResponse),
-                    'category' => 'API Validation',
+                    'category' => $known['category'] ?? 'API Validation',
                 ]];
 
                 return is_array($error) ? $error : [$error];
@@ -213,6 +279,17 @@ class JoFotaraResponse
                     'category' => 'API Validation',
                 ]];
             }
+        }
+
+        // A failed request must not look error-free: a non-200 status that came
+        // with neither validation results nor error details is reported by its
+        // status code
+        if ($this->statusCode !== 200) {
+            return [[
+                'code' => $known['code'] ?? 'HTTP_ERROR',
+                'message' => $known['message'] ?? "Unexpected HTTP status code {$this->statusCode}",
+                'category' => $known['category'] ?? 'HTTP',
+            ]];
         }
 
         return [];

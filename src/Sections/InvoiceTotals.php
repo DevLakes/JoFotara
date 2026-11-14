@@ -61,7 +61,7 @@ class InvoiceTotals implements ValidatableSection
                 throw new InvalidArgumentException('Tax inclusive amount cannot be negative');
             }
 
-            if ($amount < ($this->taxExclusiveAmount - $this->discountTotalAmount)) {
+            if ($this->exceeds($this->taxExclusiveAmount - $this->discountTotalAmount, $amount)) {
                 throw new InvalidArgumentException('Tax inclusive amount cannot be less than tax exclusive amount');
             }
         }
@@ -89,7 +89,7 @@ class InvoiceTotals implements ValidatableSection
                 throw new InvalidArgumentException('Discount total amount cannot be negative');
             }
 
-            if ($amount > $this->taxExclusiveAmount) {
+            if ($this->exceeds($amount, $this->taxExclusiveAmount)) {
                 throw new InvalidArgumentException('Discount total amount cannot be greater than tax exclusive amount');
             }
         }
@@ -113,7 +113,7 @@ class InvoiceTotals implements ValidatableSection
                 throw new InvalidArgumentException('Tax total amount cannot be negative');
             }
 
-            if ($this->taxInclusiveAmount > 0 && ($this->taxExclusiveAmount - $this->discountTotalAmount + $taxAmount) > $this->taxInclusiveAmount) {
+            if ($this->taxInclusiveAmount > 0 && $this->exceeds($this->taxExclusiveAmount - $this->discountTotalAmount + $taxAmount, $this->taxInclusiveAmount)) {
                 throw new InvalidArgumentException('Tax total amount would make tax inclusive amount invalid');
             }
         }
@@ -137,7 +137,7 @@ class InvoiceTotals implements ValidatableSection
                 throw new InvalidArgumentException('Payable amount cannot be negative');
             }
 
-            if ($this->taxInclusiveAmount > 0 && $amount < ($this->taxInclusiveAmount - $this->discountTotalAmount)) {
+            if ($this->taxInclusiveAmount > 0 && $this->exceeds($this->taxInclusiveAmount - $this->discountTotalAmount, $amount)) {
                 throw new InvalidArgumentException('Payable amount cannot be less than tax inclusive amount minus discounts');
             }
         }
@@ -145,6 +145,22 @@ class InvoiceTotals implements ValidatableSection
         $this->payableAmount = round($amount, 9);
 
         return $this;
+    }
+
+    /**
+     * Whether an amount is greater than a limit by more than rounding noise
+     *
+     * Amounts are stored and serialized with nine decimals, each rounded on its
+     * own, and binary floating point cannot represent most decimals exactly
+     * (3 x 1.15 is 3.4499999999999997). A plain comparison therefore refuses
+     * correct totals. A difference counts only when it is larger than what
+     * rounding four amounts to nine decimals can produce (two units of the
+     * ninth decimal), or than the precision a float has left at that magnitude.
+     * Both are far below the 0.001 the integration guide tolerates.
+     */
+    private function exceeds(float $amount, float $limit): bool
+    {
+        return $amount - $limit > max(2.5e-9, abs($limit) * 1e-14);
     }
 
     /**
@@ -239,10 +255,10 @@ class InvoiceTotals implements ValidatableSection
             }
 
             // Validate relationships between amounts
-            if ($this->taxInclusiveAmount < $this->taxExclusiveAmount - $this->discountTotalAmount) {
+            if ($this->exceeds($this->taxExclusiveAmount - $this->discountTotalAmount, $this->taxInclusiveAmount)) {
                 throw new InvalidArgumentException('Tax inclusive amount cannot be less than tax exclusive amount');
             }
-            if ($this->payableAmount < ($this->taxInclusiveAmount - $this->discountTotalAmount)) {
+            if ($this->exceeds($this->taxInclusiveAmount - $this->discountTotalAmount, $this->payableAmount)) {
                 throw new InvalidArgumentException('Payable amount cannot be less than tax inclusive amount minus allowances');
             }
         }

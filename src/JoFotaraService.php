@@ -226,8 +226,11 @@ class JoFotaraService
             $providedTotals = $this->invoiceTotals->toArray();
 
             foreach ($this->calculateTotalsFromItems() as $key => $expected) {
-                // The integration guide allows a rounding difference of up to 0.001
-                if (abs($providedTotals[$key] - $expected) > self::ROUNDING_TOLERANCE) {
+                // The integration guide allows a rounding difference of up to 0.001.
+                // Both sides are already rounded to nine decimals; rounding the
+                // difference as well keeps a difference of exactly 0.001 from
+                // being rejected because of binary floating point noise.
+                if (round(abs($providedTotals[$key] - $expected), 9) > self::ROUNDING_TOLERANCE) {
                     throw new InvalidArgumentException('Invoice totals do not match calculated values from line items');
                 }
             }
@@ -236,6 +239,10 @@ class JoFotaraService
 
     /**
      * Calculate the invoice totals from the line items
+     *
+     * The sums are rounded to nine decimals, the precision InvoiceTotals stores
+     * and the XML carries, so that they compare digit for digit with the totals
+     * that will be sent.
      *
      * @return array{taxExclusiveAmount: float, taxInclusiveAmount: float, discountTotalAmount: float, taxTotalAmount: float, payableAmount: float}
      */
@@ -427,31 +434,8 @@ class JoFotaraService
             throw new RuntimeException('Failed to send invoice: '.$error);
         }
 
-        // For 403 responses, create a response object with authentication error
-        if ($statusCode === 403) {
-            return new JoFotaraResponse([
-                'error' => 'Authentication failed. Please check your client ID and secret.',
-                'code' => 'AUTH_ERROR',
-            ], $statusCode);
-        }
-
-        // Parse the response for other status codes
-        $result = json_decode($response, true);
-
-        // For empty responses or parsing errors, provide appropriate error message
-        if (empty($response) || json_last_error() !== JSON_ERROR_NONE) {
-            $result = [
-                'error' => match (true) {
-                    $statusCode === 500 => 'Internal server error. Check the seller TIN, the income source sequence, the client ID and secret, and that tax rates are among the approved rates',
-                    $statusCode === 504 => 'Gateway timeout. JoFotara could not be reached; retry with the same invoice ID and UUID',
-                    empty($response) => 'Empty response from API',
-                    default => 'Invalid JSON response from API: '.json_last_error_msg(),
-                },
-                'raw_response' => $response,
-            ];
-        }
-
-        return new JoFotaraResponse($result, $statusCode);
+        // Status handling and body parsing live in JoFotaraResponse
+        return JoFotaraResponse::fromHttpResponse($response, $statusCode);
     }
 
     /**

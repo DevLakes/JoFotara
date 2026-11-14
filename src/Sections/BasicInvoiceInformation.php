@@ -229,19 +229,60 @@ class BasicInvoiceInformation implements ValidatableSection
             throw new InvalidArgumentException('Invoice type must be set before setting payment method. Use setInvoiceType() first.');
         }
 
-        if (! preg_match('/^[0-5][12][123]$/', $method)) {
+        $parts = self::paymentMethodCodes()[$method] ?? null;
+
+        if ($parts === null) {
             throw new InvalidArgumentException('Payment method must be one of: 011, 021 (Income), 012, 022 (General Sales), 013, 023 (Special Sales), or their export (1xx), development zone (2xx), transit (3xx), foreign trade (4xx) and free zone transfer (5xx) variants');
         }
 
         // Validate that the payment method is valid for the current invoice type
-        if ($method[2] !== (self::TAX_TYPE_DIGITS[$this->invoiceType] ?? null)) {
+        if ($parts['invoiceType'] !== $this->invoiceType) {
             throw new InvalidArgumentException("Payment method '$method' is not valid for invoice type '{$this->invoiceType}'");
         }
 
-        $this->transactionType = array_search($method[0], self::TRANSACTION_TYPES, true);
-        $this->paymentKind = array_search($method[1], self::PAYMENT_KINDS, true);
+        $this->transactionType = $parts['transactionType'];
+        $this->paymentKind = $parts['paymentKind'];
 
         return $this;
+    }
+
+    /**
+     * Get every payment method code accepted by JoFotara
+     *
+     * @return list<string> e.g. ['011', '012', '013', '021', ...]
+     */
+    public static function getSupportedPaymentMethods(): array
+    {
+        return array_map('strval', array_keys(self::paymentMethodCodes()));
+    }
+
+    /**
+     * Every valid payment method code with the parts it is made of, built from
+     * TRANSACTION_TYPES, PAYMENT_KINDS and TAX_TYPE_DIGITS so that the codes are
+     * defined in one place only
+     *
+     * @return array<string|int, array{transactionType: string, paymentKind: string, invoiceType: string}>
+     */
+    private static function paymentMethodCodes(): array
+    {
+        static $codes = null;
+
+        if ($codes === null) {
+            $codes = [];
+            foreach (self::TRANSACTION_TYPES as $transactionType => $transactionDigit) {
+                foreach (self::PAYMENT_KINDS as $paymentKind => $paymentDigit) {
+                    foreach (self::TAX_TYPE_DIGITS as $invoiceType => $taxDigit) {
+                        $codes[$transactionDigit.$paymentDigit.$taxDigit] = [
+                            'transactionType' => $transactionType,
+                            'paymentKind' => $paymentKind,
+                            'invoiceType' => $invoiceType,
+                        ];
+                    }
+                }
+            }
+        }
+
+        return $codes;
     }
 
     /**
