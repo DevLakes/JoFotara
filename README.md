@@ -138,7 +138,15 @@ $invoice->basicInformation()->setCurrency('USD');
 
 Supported: JOD, USD, EUR, SAR, AED, OMR, GBP, QAR, KWD, BHD, AUD, CAD, JPY, CHF, TRY, SYP, EGP, SEK.
 
-> The buyer name is mandatory for cash invoices above 10,000 JOD or the equivalent in a foreign currency. The SDK enforces this for JOD invoices only; check the equivalent yourself for other currencies.
+The buyer name is mandatory for cash invoices above 10,000 JOD or the equivalent in a foreign currency. To let the SDK apply that rule to a foreign currency invoice, state what one unit of the currency is worth in JOD:
+
+```php
+$invoice->basicInformation()
+    ->setCurrency('USD')
+    ->setExchangeRate(0.709);   // 1 USD = 0.709 JOD; used for this check only, never sent
+```
+
+Without an exchange rate the SDK cannot tell whether a foreign currency cash invoice is under the threshold, so it requires the buyer name.
 
 ### Tax Handling
 
@@ -214,7 +222,19 @@ if ($response->isSuccess()) {
 }
 ```
 
-Do not rely on the HTTP status alone; `isSuccess()` also checks `EINV_STATUS`. Store the invoice ID, UUID, QR code and status. If sending fails or times out, send again with the **same** ID and UUID (never generate a new UUID): JoFotara answers `ALREADY_SUBMITTED` with the original QR code, which `isAlreadySubmitted()` reports.
+Do not rely on the HTTP status alone; `isSuccess()` also checks `EINV_STATUS` and that the QR code is present, as the integration guide requires. A response reported as submitted without a QR code is not a success and carries a `QR_CODE_MISSING` error.
+
+Errors the SDK classifies itself carry one of these categories (`JoFotaraResponse::CATEGORY_*`), so you can tell a rejected invoice from an infrastructure problem worth retrying:
+
+| HTTP status | Code | Category |
+|-------------|------|----------|
+| 400 | `API_ERROR` (or the API's own errors) | `API Validation` |
+| 403 | `AUTH_ERROR` | `Authentication` |
+| 500 | `SERVER_ERROR` | `Server Error` |
+| 504 | `GATEWAY_TIMEOUT` | `Gateway Timeout` |
+| any other failure status | `HTTP_ERROR` | `HTTP` |
+
+Store the invoice ID, UUID, QR code and status. If sending fails or times out, send again with the **same** ID and UUID (never generate a new UUID): JoFotara answers `ALREADY_SUBMITTED` with the original QR code, which `isAlreadySubmitted()` reports.
 
 ## 🧪 Testing
 
@@ -287,7 +307,7 @@ $invoice->sellerInformation()
 
 ```php
 $invoice->customerInformation()
-    ->setId('987654321', 'TN')         // Required: ID (digits only) and type (TN, NIN, or PN)
+    ->setId('987654321', 'TIN')        // Required: ID (digits only) and type (TIN, NIN, or PN)
     ->setName('Customer Name')          // Required for receivables
     ->setPostalCode('11937')           // Optional: up to 5 digits
     ->setCityCode('JO-IR')             // Optional: Jordan city code
@@ -439,6 +459,10 @@ The SDK includes comprehensive validation to ensure your invoice meets JoFotara 
 - Valid city codes and tax categories
 
 Validation errors throw `InvalidArgumentException` with descriptive messages to help you quickly identify and fix issues.
+
+The buyer's tax number type can be given as `TIN` or as `TN`, the scheme name of the integration guide; both are sent as `TN`.
+
+> **Upgrading:** following the integration guide, the buyer ID must now be digits only for every type (`NIN`, `PN`, `TIN`), the postal code at most 5 digits and the phone 9 to 14 digits. If you were sending alphanumeric passport numbers under `PN`, send the numeric personal number instead.
 
 ### Bypassing Validations
 
