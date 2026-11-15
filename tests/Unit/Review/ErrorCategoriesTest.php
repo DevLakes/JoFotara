@@ -57,3 +57,33 @@ test('an error code sent by the API wins over the table', function () {
 
     expect($response->getErrors())->toBe([['code' => 'E42', 'message' => 'Boom', 'category' => 'Server Error']]);
 });
+
+test('the HTTP status code is preserved for every kind of response', function (int $statusCode, string|false|null $body) {
+    expect(JoFotaraResponse::fromHttpResponse($body, $statusCode)->getStatusCode())->toBe($statusCode);
+})->with([
+    [200, '{}'], [400, '{"error":"x"}'], [403, ''], [500, '<html>'], [504, null], [502, false], [418, '{"a":1}'],
+]);
+
+test('errors returned by the API are passed through unchanged for every status', function (int $statusCode) {
+    $apiErrors = [
+        ['type' => 'ERROR', 'status' => 'ERROR', 'EINV_CODE' => 'totalGeneralTaxesAmount', 'EINV_CATEGORY' => 'invoice', 'EINV_MESSAGE' => 'Total General Amount is Not Correct'],
+        ['type' => 'ERROR', 'status' => 'ERROR', 'EINV_CODE' => 'buyerName', 'EINV_CATEGORY' => 'invoice', 'EINV_MESSAGE' => 'Bayer name is missing'],
+    ];
+    $response = JoFotaraResponse::fromHttpResponse(json_encode([
+        'EINV_RESULTS' => ['status' => 'ERROR', 'INFO' => [], 'WARNINGS' => [], 'ERRORS' => $apiErrors],
+        'EINV_STATUS' => 'NOT_SUBMITTED',
+    ]), $statusCode);
+
+    expect($response->getErrors())->toBe($apiErrors)
+        ->and($response->getInvoiceStatus())->toBe('NOT_SUBMITTED')
+        ->and($response->getErrorSummary())->toContain('[totalGeneralTaxesAmount] invoice: Total General Amount is Not Correct');
+})->with([400, 500, 504, 502]);
+
+test('the raw body of an unusable response is kept for diagnosis', function (int $statusCode, string|false|null $body) {
+    expect(JoFotaraResponse::fromHttpResponse($body, $statusCode)->getRawResponse()['raw_response'])->toBe($body);
+})->with([
+    [500, '<html>Internal Server Error</html>'],
+    [504, ''],
+    [502, '{"truncated":'],
+    [200, null],
+]);

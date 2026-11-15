@@ -185,7 +185,10 @@ class JoFotaraResponse
      */
     public function hasQrCode(): bool
     {
-        return ! empty($this->getQrCode());
+        $qrCode = $this->rawResponse['qrCode'] ?? $this->rawResponse['EINV_QR'] ?? null;
+
+        // Only a non-blank string is a QR code
+        return is_string($qrCode) && trim($qrCode) !== '';
     }
 
     /**

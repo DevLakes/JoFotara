@@ -114,3 +114,64 @@ test('the exchange rate must be positive and is never sent', function () {
         ->and(fn () => $info->setExchangeRate(-1.0))->toThrow(InvalidArgumentException::class, 'Exchange rate must be greater than 0')
         ->and(cashInvoiceOf(100, 'USD', 0.709, true)->generateXml())->not->toContain('0.709');
 });
+
+test('an exchange rate that is not a positive finite number is refused', function (float $rate) {
+    $info = (new BasicInvoiceInformation)->setExchangeRate(0.709);
+
+    expect(fn () => $info->setExchangeRate($rate))
+        ->toThrow(InvalidArgumentException::class, 'Exchange rate must be greater than 0')
+        // The previous valid rate is kept
+        ->and($info->setCurrency('USD')->getExchangeRate())->toBe(0.709);
+})->with([
+    'zero' => [0.0],
+    'negative zero' => [-0.0],
+    'negative' => [-0.709],
+    'NAN' => [NAN],
+    'INF' => [INF],
+    'negative INF' => [-INF],
+]);
+
+test('the exchange rate never appears in the XML', function () {
+    $xml = cashInvoiceOf(1234.5, 'USD', 0.708123, true)->generateXml();
+
+    expect($xml)->not->toContain('0.708123')
+        ->not->toContain('708123')
+        ->not->toContain('ExchangeRate')
+        ->not->toContain('874.17')   // 1234.5 x 0.708123, the JOD value
+        ->toContain('<cbc:PayableAmount currencyID="JO">1234.500000000</cbc:PayableAmount>');
+});
+
+test('the threshold is applied to the invoice total, converted with the rate', function () {
+    // 3 lines of 4,000 USD at 16%: total 13,920 USD. At 0.71 that is 9,883.20 JOD
+    // (under), at 0.72 it is 10,022.40 JOD (over). No single line reaches it.
+    $build = function (float $rate) {
+        $invoice = reviewInvoice('general_sales', false);
+        $invoice->basicInformation()->setCurrency('USD')->setExchangeRate($rate);
+        foreach (['1', '2', '3'] as $id) {
+            $invoice->items()->addItem($id)->setQuantity(1)->setUnitPrice(4000)->setDescription('Item')->tax(16);
+        }
+        $invoice->invoiceTotals();
+
+        return $invoice;
+    };
+
+    expect($build(0.71)->generateXml())->toBeString()
+        ->and(fn () => $build(0.72)->generateXml())->toThrow(InvalidArgumentException::class, BUYER_NAME_MESSAGE);
+});
+
+test('a converted total that is 10,000 JOD apart from floating point noise is not over the threshold', function () {
+    // 14084.507042254 x 0.71 = 10000.00000000034 in binary floating point
+    expect(cashInvoiceOf(14084.507042254, 'USD', 0.71, false)->generateXml())->toBeString()
+        ->and(fn () => cashInvoiceOf(14084.51, 'USD', 0.71, false)->generateXml())
+        ->toThrow(InvalidArgumentException::class, BUYER_NAME_MESSAGE);
+});
+
+test('the exchange rate is ignored for JOD invoices', function () {
+    $invoice = reviewInvoice('general_sales', false);
+    $invoice->basicInformation()->setExchangeRate(5.0);
+    $invoice->items()->addItem('1')->setQuantity(1)->setUnitPrice(9000)->setDescription('Item')->zeroTax();
+    $invoice->invoiceTotals();
+
+    expect($invoice->basicInformation()->getExchangeRate())->toBe(1.0)
+        ->and($invoice->generateXml())->toBeString();
+});

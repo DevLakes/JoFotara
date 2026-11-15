@@ -64,3 +64,80 @@ test('a rejected invoice is unaffected by the QR code rule', function () {
 
     expect($response->isSuccess())->toBeFalse()->and($response->getErrors())->toBe([$apiError]);
 });
+
+test('a QR code that is blank or not a string does not count', function (mixed $qrCode) {
+    $response = new JoFotaraResponse([
+        'EINV_RESULTS' => ['status' => 'PASS', 'INFO' => [], 'WARNINGS' => [], 'ERRORS' => []],
+        'EINV_STATUS' => 'SUBMITTED',
+        'EINV_QR' => $qrCode,
+    ], 200);
+
+    expect($response->hasQrCode())->toBeFalse()
+        ->and($response->isSuccess())->toBeFalse()
+        ->and($response->getErrors()[0]['code'])->toBe('QR_CODE_MISSING');
+})->with([
+    'spaces' => ['   '],
+    'newline' => ["\n"],
+    'tab' => ["\t "],
+    'false' => [false],
+    'array' => [[]],
+    'non-empty array' => [['qr']],
+]);
+
+test('a malformed submitted response is never a success', function (array $body) {
+    $response = new JoFotaraResponse($body, 200);
+
+    expect($response->isSuccess())->toBeFalse();
+})->with([
+    'no validation results' => [['EINV_STATUS' => 'SUBMITTED', 'EINV_QR' => 'qr']],
+    'no validation results, no QR' => [['EINV_STATUS' => 'SUBMITTED']],
+    'validation errors with QR' => [['EINV_RESULTS' => ['status' => 'ERROR', 'ERRORS' => [['EINV_CODE' => 'x']]], 'EINV_STATUS' => 'SUBMITTED', 'EINV_QR' => 'qr']],
+    'unknown status with QR' => [['EINV_RESULTS' => ['status' => 'PASS', 'ERRORS' => []], 'EINV_STATUS' => 'PENDING', 'EINV_QR' => 'qr']],
+    'empty body' => [[]],
+]);
+
+test('API errors are reported in preference to the missing QR code', function () {
+    $apiError = ['type' => 'ERROR', 'status' => 'ERROR', 'EINV_CODE' => 'x', 'EINV_CATEGORY' => 'invoice', 'EINV_MESSAGE' => 'Wrong'];
+    $response = new JoFotaraResponse([
+        'EINV_RESULTS' => ['status' => 'ERROR', 'INFO' => [], 'WARNINGS' => [], 'ERRORS' => [$apiError]],
+        'EINV_STATUS' => 'SUBMITTED',
+    ], 200);
+
+    expect($response->isSuccess())->toBeFalse()->and($response->getErrors())->toBe([$apiError]);
+});
+
+test('a failed HTTP status is not a success even with a submitted status and a QR code', function (int $statusCode, string $code) {
+    $body = json_encode([
+        'EINV_RESULTS' => ['status' => 'PASS', 'INFO' => [], 'WARNINGS' => [], 'ERRORS' => []],
+        'EINV_STATUS' => 'SUBMITTED',
+        'EINV_QR' => 'qr',
+    ]);
+    $response = JoFotaraResponse::fromHttpResponse($body, $statusCode);
+
+    expect($response->isSuccess())->toBeFalse()
+        ->and($response->getStatusCode())->toBe($statusCode)
+        ->and($response->getErrorSummary() ?? '')->not->toContain('QR_CODE_MISSING');
+
+    if ($code !== '') {
+        expect($response->getErrors()[0]['code'])->toBe($code);
+    }
+})->with([
+    [400, ''],
+    [403, 'AUTH_ERROR'],
+    [500, ''],
+    [504, ''],
+    [502, ''],
+]);
+
+test('a submitted response with its QR code through the HTTP path is a success', function (string $status) {
+    $response = JoFotaraResponse::fromHttpResponse(json_encode([
+        'EINV_RESULTS' => ['status' => 'PASS', 'INFO' => [], 'WARNINGS' => [], 'ERRORS' => []],
+        'EINV_STATUS' => $status,
+        'EINV_QR' => 'AQACAnt9AwVmYWxzZQ==',
+    ]), 200);
+
+    expect($response->isSuccess())->toBeTrue()
+        ->and($response->getQrCode())->toBe('AQACAnt9AwVmYWxzZQ==')
+        ->and($response->getErrors())->toBe([])
+        ->and($response->isAlreadySubmitted())->toBe($status === 'ALREADY_SUBMITTED');
+})->with(['SUBMITTED', 'ALREADY_SUBMITTED']);

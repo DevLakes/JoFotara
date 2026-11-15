@@ -360,11 +360,12 @@ class BasicInvoiceInformation implements ValidatableSection
      *
      * @param  float  $jodPerUnit  JOD value of one unit of the invoice currency
      *
-     * @throws InvalidArgumentException If the rate is not greater than 0
+     * @throws InvalidArgumentException If the rate is not a finite number greater than 0
      */
     public function setExchangeRate(float $jodPerUnit): self
     {
-        if ($jodPerUnit <= 0) {
+        // NAN compares false with everything, so it must be ruled out explicitly
+        if (! is_finite($jodPerUnit) || $jodPerUnit <= 0) {
             throw new InvalidArgumentException('Exchange rate must be greater than 0');
         }
 
