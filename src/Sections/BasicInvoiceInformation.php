@@ -76,6 +76,8 @@ class BasicInvoiceInformation implements ValidatableSection
 
     private string $currency = 'JOD';
 
+    private ?float $exchangeRate = null;
+
     private int $invoiceCounter = 1;
 
     private bool $isCreditInvoice = false;
@@ -348,6 +350,36 @@ class BasicInvoiceInformation implements ValidatableSection
     public function getCurrency(): string
     {
         return $this->currency;
+    }
+
+    /**
+     * State the value of one unit of the invoice currency in JOD, e.g. 0.709
+     * for USD. It is not sent to JoFotara: the SDK uses it only to apply the
+     * rule that a cash invoice worth more than 10,000 JOD, or the equivalent in
+     * a foreign currency, must carry the buyer name. It is ignored for JOD.
+     *
+     * @param  float  $jodPerUnit  JOD value of one unit of the invoice currency
+     *
+     * @throws InvalidArgumentException If the rate is not greater than 0
+     */
+    public function setExchangeRate(float $jodPerUnit): self
+    {
+        if ($jodPerUnit <= 0) {
+            throw new InvalidArgumentException('Exchange rate must be greater than 0');
+        }
+
+        $this->exchangeRate = $jodPerUnit;
+
+        return $this;
+    }
+
+    /**
+     * Get the JOD value of one unit of the invoice currency: 1.0 for JOD, the
+     * rate given to setExchangeRate() otherwise, or null when it is unknown
+     */
+    public function getExchangeRate(): ?float
+    {
+        return $this->currency === 'JOD' ? 1.0 : $this->exchangeRate;
     }
 
     /**

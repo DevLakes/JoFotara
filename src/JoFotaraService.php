@@ -325,14 +325,23 @@ class JoFotaraService
      */
     private function validateCustomerRequirements(): void
     {
-        // The buyer name is mandatory for receivable invoices and for cash
-        // invoices above 10,000 JOD. For other currencies the guide asks for the
-        // JOD equivalent, which the SDK cannot compute, so only JOD is checked.
-        $isOverThreshold = $this->basicInfo->getCurrency() === 'JOD'
-            && $this->invoiceTotals->getPayableAmount() > 10000;
+        // Guide v1.5: the buyer name is mandatory when the invoice is receivable,
+        // or is a cash invoice worth more than 10,000 JOD "or the equivalent in
+        // foreign currencies". The rule is the same for every invoice type and
+        // for credit invoices.
+        if (empty($this->customerInfo->getName())) {
+            $exchangeRate = $this->basicInfo->getExchangeRate();
 
-        if (($this->basicInfo->isReceivable() || $isOverThreshold) && empty($this->customerInfo->getName())) {
-            throw new InvalidArgumentException('Customer name is required for receivable invoices or invoices over 10000 JOD');
+            if ($this->basicInfo->isReceivable()
+                || ($exchangeRate !== null && round($this->invoiceTotals->getPayableAmount() * $exchangeRate, 9) > 10000)) {
+                throw new InvalidArgumentException('Customer name is required for receivable invoices or invoices over 10000 JOD');
+            }
+
+            // Foreign currency and no exchange rate: the JOD value is unknown,
+            // so the invoice cannot be shown to be under the threshold
+            if ($exchangeRate === null) {
+                throw new InvalidArgumentException('Customer name is required for receivable invoices or invoices over 10000 JOD, and the JOD value of this '.$this->basicInfo->getCurrency().' invoice is unknown. Use setExchangeRate() on the basic information to state it, or set the customer name');
+            }
         }
 
         // Development zone invoices require the buyer's tax number
