@@ -4,12 +4,13 @@ namespace JBadarneh\JoFotara\Sections;
 
 use InvalidArgumentException;
 use JBadarneh\JoFotara\Contracts\ValidatableSection;
+use JBadarneh\JoFotara\Traits\ComparesAmounts;
 use JBadarneh\JoFotara\Traits\WithValidationConfigs;
 use JBadarneh\JoFotara\Traits\XmlHelperTrait;
 
 class InvoiceLineItem implements ValidatableSection
 {
-    use WithValidationConfigs, XmlHelperTrait;
+    use ComparesAmounts, WithValidationConfigs, XmlHelperTrait;
 
     private string $id;
 
@@ -89,7 +90,7 @@ class InvoiceLineItem implements ValidatableSection
                 throw new InvalidArgumentException('Discount amount cannot be negative');
             }
 
-            if (isset($this->quantity) && isset($this->unitPrice) && $amount > ($this->quantity * $this->unitPrice)) {
+            if (isset($this->quantity) && isset($this->unitPrice) && $this->amountExceeds($amount, $this->quantity * $this->unitPrice)) {
                 throw new InvalidArgumentException('Discount cannot be greater than total amount');
             }
         }
@@ -283,7 +284,12 @@ class InvoiceLineItem implements ValidatableSection
             throw new InvalidArgumentException('Unit price is required to calculate tax exclusive amount');
         }
 
-        return ($this->quantity * $this->unitPrice) - $this->discount;
+        $amount = ($this->quantity * $this->unitPrice) - $this->discount;
+
+        // A full discount can leave floating point noise (3 x 1.15 - 3.45 is
+        // -4.4e-16), which would be written as "-0.000000000". Anything below
+        // half a unit of the ninth decimal is zero once serialized.
+        return abs($amount) < 5e-10 ? 0.0 : $amount;
     }
 
     /**
@@ -470,7 +476,7 @@ class InvoiceLineItem implements ValidatableSection
         if ($this->discount < 0) {
             throw new InvalidArgumentException('Item discount cannot be negative');
         }
-        if ($this->discount > ($this->quantity * $this->unitPrice)) {
+        if ($this->amountExceeds($this->discount, $this->quantity * $this->unitPrice)) {
             throw new InvalidArgumentException('Item discount cannot be greater than total amount');
         }
 
