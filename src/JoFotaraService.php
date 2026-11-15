@@ -35,6 +35,13 @@ class JoFotaraService
 
     private ?InvoiceTotals $invoiceTotals = null;
 
+    /**
+     * The totals as the SDK last calculated them. While the totals object still
+     * holds exactly these values the caller has not overridden them, so they
+     * are recalculated whenever the line items change.
+     */
+    private ?array $calculatedTotals = null;
+
     private ?ReasonForReturn $reasonForReturn = null;
 
     private string $clientId;
@@ -142,21 +149,59 @@ class JoFotaraService
         if (! $this->invoiceTotals) {
             $this->invoiceTotals = new InvoiceTotals;
             $this->invoiceTotals->setValidationsEnabled($this->validationsEnabled);
+            $this->calculatedTotals = $this->invoiceTotals->toArray();
 
             // If we have items, calculate totals from them
             if ($this->items && count($this->items->getItems()) > 0) {
-                $totals = $this->calculateTotalsFromItems();
-
-                $this->invoiceTotals
-                    ->setTaxExclusiveAmount($totals['taxExclusiveAmount'])
-                    ->setDiscountTotalAmount($totals['discountTotalAmount'])
-                    ->setTaxInclusiveAmount($totals['taxInclusiveAmount'])
-                    ->setTaxTotalAmount($totals['taxTotalAmount'])
-                    ->setPayableAmount($totals['payableAmount']);
+                $this->applyCalculatedTotals();
             }
+        } else {
+            $this->refreshCalculatedTotals();
         }
 
         return $this->invoiceTotals;
+    }
+
+    /**
+     * Set the totals from the current line items and remember the result
+     *
+     * @throws InvalidArgumentException If a line item is incomplete
+     */
+    private function applyCalculatedTotals(): void
+    {
+        $totals = $this->calculateTotalsFromItems();
+
+        $this->invoiceTotals
+            ->setTaxExclusiveAmount($totals['taxExclusiveAmount'])
+            ->setDiscountTotalAmount($totals['discountTotalAmount'])
+            ->setTaxInclusiveAmount($totals['taxInclusiveAmount'])
+            ->setTaxTotalAmount($totals['taxTotalAmount'])
+            ->setPayableAmount($totals['payableAmount']);
+
+        $this->calculatedTotals = $this->invoiceTotals->toArray();
+    }
+
+    /**
+     * Recalculate the totals if the line items changed since they were
+     * calculated, so that validation and the XML always use current figures.
+     * Totals the caller set explicitly are left as they are.
+     */
+    private function refreshCalculatedTotals(): void
+    {
+        if (! $this->invoiceTotals || ! $this->items || count($this->items->getItems()) === 0) {
+            return;
+        }
+
+        if ($this->invoiceTotals->toArray() !== $this->calculatedTotals) {
+            return;
+        }
+
+        try {
+            $this->applyCalculatedTotals();
+        } catch (InvalidArgumentException) {
+            // A line item is incomplete or inconsistent; the section validation
+            // that follows reports it with its own message
+        }
     }
 
     /**
@@ -338,6 +383,9 @@ class JoFotaraService
 
     public function generateXml(): string
     {
+        // Bring calculated totals up to date with the line items
+        $this->refreshCalculatedTotals();
+
         // Validate sections before generating XML
         // This will respect the validationsEnabled flag
         $this->validateSections();
