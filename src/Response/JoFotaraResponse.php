@@ -8,9 +8,25 @@ namespace JBadarneh\JoFotara\Response;
 class JoFotaraResponse
 {
     /**
+     * Error categories reported by getErrors() for errors the SDK classifies
+     * itself. Errors returned by the API keep the category the API gave them.
+     */
+    public const CATEGORY_API_VALIDATION = 'API Validation';
+
+    public const CATEGORY_AUTHENTICATION = 'Authentication';
+
+    public const CATEGORY_SERVER_ERROR = 'Server Error';
+
+    public const CATEGORY_GATEWAY_TIMEOUT = 'Gateway Timeout';
+
+    public const CATEGORY_HTTP = 'HTTP';
+
+    public const CATEGORY_RESPONSE = 'Response';
+
+    /**
      * HTTP status codes with a known meaning, per the JoFotara integration
      * guide. This is the single source for their error code, message and
-     * category.
+     * category, used by fromHttpResponse() and getErrors() alike.
      *
      * A status marked "discardBody" is reported from this table alone: whatever
      * body the API returned is ignored.
@@ -19,19 +35,19 @@ class JoFotaraResponse
         403 => [
             'code' => 'AUTH_ERROR',
             'message' => 'Authentication failed. Please check your client ID and secret.',
-            'category' => 'Authentication',
+            'category' => self::CATEGORY_AUTHENTICATION,
             'discardBody' => true,
         ],
         500 => [
-            'code' => 'API_ERROR',
+            'code' => 'SERVER_ERROR',
             'message' => 'Internal server error. Check the seller TIN, the income source sequence, the client ID and secret, and that tax rates are among the approved rates',
-            'category' => 'API Validation',
+            'category' => self::CATEGORY_SERVER_ERROR,
             'discardBody' => false,
         ],
         504 => [
-            'code' => 'API_ERROR',
+            'code' => 'GATEWAY_TIMEOUT',
             'message' => 'Gateway timeout. JoFotara could not be reached; retry with the same invoice ID and UUID',
-            'category' => 'API Validation',
+            'category' => self::CATEGORY_GATEWAY_TIMEOUT,
             'discardBody' => false,
         ],
     ];
@@ -104,13 +120,17 @@ class JoFotaraResponse
             return;
         }
 
-        // Determine if this is a success or error response based on structure
+        // Determine if this is a success or error response based on structure.
+        // The integration guide requires the QR code to be present before a
+        // submitted invoice is treated as received and approved.
         if (isset($response['validationResults'])) {
             $this->success = $response['validationResults']['status'] === 'PASS' &&
-                             ($response['invoiceStatus'] === 'SUBMITTED' || $response['invoiceStatus'] === 'ALREADY_SUBMITTED');
+                             ($response['invoiceStatus'] === 'SUBMITTED' || $response['invoiceStatus'] === 'ALREADY_SUBMITTED') &&
+                             $this->hasQrCode();
         } elseif (isset($response['EINV_RESULTS'])) {
             $this->success = $response['EINV_RESULTS']['status'] !== 'ERROR' &&
-                             ($response['EINV_STATUS'] === 'SUBMITTED' || $response['EINV_STATUS'] === 'ALREADY_SUBMITTED');
+                             ($response['EINV_STATUS'] === 'SUBMITTED' || $response['EINV_STATUS'] === 'ALREADY_SUBMITTED') &&
+                             $this->hasQrCode();
         } else {
             $this->success = false;
         }
@@ -250,12 +270,15 @@ class JoFotaraResponse
             ]];
         }
 
+        // Code and category for errors the API did not classify itself
+        $class = $known ?? $this->unlistedStatusClass();
+
         if (isset($this->rawResponse['validationResults']['errorMessages'])) {
-            return $this->rawResponse['validationResults']['errorMessages'];
+            return $this->withMissingQrCodeError($this->rawResponse['validationResults']['errorMessages']);
         }
 
         if (isset($this->rawResponse['EINV_RESULTS']['ERRORS'])) {
-            return $this->rawResponse['EINV_RESULTS']['ERRORS'];
+            return $this->withMissingQrCodeError($this->rawResponse['EINV_RESULTS']['ERRORS']);
         }
 
         // For error responses with status code 400 or specific error structure
@@ -263,9 +286,9 @@ class JoFotaraResponse
             // If there's a specific error structure, use it
             if (isset($this->rawResponse['error']) || isset($this->rawResponse['errors'])) {
                 $error = isset($this->rawResponse['errors']) ? $this->rawResponse['errors'] : [[
-                    'code' => $this->rawResponse['code'] ?? $known['code'] ?? 'API_ERROR',
+                    'code' => $this->rawResponse['code'] ?? $class['code'],
                     'message' => $this->rawResponse['error'] ?? json_encode($this->rawResponse),
-                    'category' => $known['category'] ?? 'API Validation',
+                    'category' => $class['category'],
                 ]];
 
                 return is_array($error) ? $error : [$error];
@@ -276,7 +299,7 @@ class JoFotaraResponse
                 return [[
                     'code' => 'API_ERROR',
                     'message' => json_encode($this->rawResponse),
-                    'category' => 'API Validation',
+                    'category' => self::CATEGORY_API_VALIDATION,
                 ]];
             }
         }
@@ -286,13 +309,46 @@ class JoFotaraResponse
         // status code
         if ($this->statusCode !== 200) {
             return [[
-                'code' => $known['code'] ?? 'HTTP_ERROR',
+                'code' => $class['code'],
                 'message' => $known['message'] ?? "Unexpected HTTP status code {$this->statusCode}",
-                'category' => $known['category'] ?? 'HTTP',
+                'category' => $class['category'],
             ]];
         }
 
-        return [];
+        return $this->withMissingQrCodeError([]);
+    }
+
+    /**
+     * Error code and category for a status that is not in STATUS_ERRORS: an API
+     * validation error for 200 and 400, an unexpected HTTP response otherwise
+     *
+     * @return array{code: string, category: string}
+     */
+    private function unlistedStatusClass(): array
+    {
+        return in_array($this->statusCode, [200, 400], true)
+            ? ['code' => 'API_ERROR', 'category' => self::CATEGORY_API_VALIDATION]
+            : ['code' => 'HTTP_ERROR', 'category' => self::CATEGORY_HTTP];
+    }
+
+    /**
+     * When the API reported the invoice as submitted without any error but the
+     * response has no QR code, report that: the invoice is not a success, and
+     * a failure must not look error-free
+     */
+    private function withMissingQrCodeError(array $errors): array
+    {
+        $submitted = in_array($this->getInvoiceStatus(), ['SUBMITTED', 'ALREADY_SUBMITTED'], true);
+
+        if ($errors !== [] || $this->statusCode !== 200 || ! $submitted || $this->hasQrCode()) {
+            return $errors;
+        }
+
+        return [[
+            'code' => 'QR_CODE_MISSING',
+            'message' => 'The invoice was reported as submitted but the response has no QR code',
+            'category' => self::CATEGORY_RESPONSE,
+        ]];
     }
 
     /**

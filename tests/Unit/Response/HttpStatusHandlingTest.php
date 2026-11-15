@@ -72,15 +72,17 @@ test('a 403 response built by hand keeps its existing error shape', function () 
 // 500 and 504
 
 test('500 and 504 without a usable body yield their guide message', function (int $statusCode, string $message, string|false|null $body) {
+    [$code, $category] = $statusCode === 500 ? ['SERVER_ERROR', 'Server Error'] : ['GATEWAY_TIMEOUT', 'Gateway Timeout'];
+
     $response = sendWithHttpResult($body, $statusCode);
 
     expect($response->isSuccess())->toBeFalse()
         ->and($response->getStatusCode())->toBe($statusCode)
         ->and($response->getRawResponse())->toBe(['error' => $message, 'raw_response' => $body])
         ->and($response->getErrors())->toBe([[
-            'code' => 'API_ERROR',
+            'code' => $code,
             'message' => $message,
-            'category' => 'API Validation',
+            'category' => $category,
         ]]);
 })->with([
     '500 empty' => [500, SERVER_ERROR_MESSAGE, ''],
@@ -103,14 +105,14 @@ test('500 with validation results in the body reports those errors', function ()
         ->and($response->getInvoiceStatus())->toBe('NOT_SUBMITTED');
 });
 
-test('500 and 504 with a JSON body that has no error details still report an error', function (int $statusCode, string $message) {
+test('500 and 504 with a JSON body that has no error details still report an error', function (int $statusCode, string $message, string $code, string $category) {
     $response = sendWithHttpResult('{"path":"/core/invoices/"}', $statusCode);
 
     expect($response->getRawResponse())->toBe(['path' => '/core/invoices/'])
-        ->and($response->getErrors())->toBe([['code' => 'API_ERROR', 'message' => $message, 'category' => 'API Validation']]);
+        ->and($response->getErrors())->toBe([['code' => $code, 'message' => $message, 'category' => $category]]);
 })->with([
-    [500, SERVER_ERROR_MESSAGE],
-    [504, GATEWAY_TIMEOUT_MESSAGE],
+    [500, SERVER_ERROR_MESSAGE, 'SERVER_ERROR', 'Server Error'],
+    [504, GATEWAY_TIMEOUT_MESSAGE, 'GATEWAY_TIMEOUT', 'Gateway Timeout'],
 ]);
 
 // Unknown and unexpected statuses
@@ -120,7 +122,10 @@ test('unknown statuses with an unusable body keep the existing messages', functi
 
     expect($response->isSuccess())->toBeFalse()
         ->and($response->getRawResponse())->toBe(['error' => $message, 'raw_response' => $body])
-        ->and($response->getErrors())->toBe([['code' => 'API_ERROR', 'message' => $message, 'category' => 'API Validation']]);
+        ->and($response->getErrors())->toBe([$statusCode === 200
+            ? ['code' => 'API_ERROR', 'message' => $message, 'category' => 'API Validation']
+            : ['code' => 'HTTP_ERROR', 'message' => $message, 'category' => 'HTTP'],
+        ]);
 })->with([
     '502 empty' => [502, '', 'Empty response from API'],
     '503 null' => [503, null, 'Empty response from API'],
