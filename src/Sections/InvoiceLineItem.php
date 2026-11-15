@@ -284,12 +284,18 @@ class InvoiceLineItem implements ValidatableSection
             throw new InvalidArgumentException('Unit price is required to calculate tax exclusive amount');
         }
 
-        $amount = ($this->quantity * $this->unitPrice) - $this->discount;
+        $gross = $this->quantity * $this->unitPrice;
+        $amount = $gross - $this->discount;
 
         // A full discount can leave floating point noise (3 x 1.15 - 3.45 is
         // -4.4e-16), which would be written as "-0.000000000". Anything below
-        // half a unit of the ninth decimal is zero once serialized.
-        return abs($amount) < 5e-10 ? 0.0 : $amount;
+        // half a unit of the ninth decimal is zero once serialized, and so is a
+        // negative remainder the discount check accepts as rounding noise.
+        if (abs($amount) < 5e-10 || ($amount < 0 && ! $this->amountExceeds($this->discount, $gross))) {
+            return 0.0;
+        }
+
+        return $amount;
     }
 
     /**
