@@ -24,7 +24,7 @@ test('it validates ID types', function () {
         // Invalid ID type should throw
         ->and(fn () => $customer->setId('123456789', 'XXX'))->toThrow(
             InvalidArgumentException::class,
-            'ID type must be one of: NIN, PN, TN'
+            'ID type must be one of: NIN, PN, TIN'
         );
 });
 

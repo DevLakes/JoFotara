@@ -44,19 +44,16 @@ class CustomerInformation implements ValidatableSection
      * Set the customer's identification number
      *
      * @param  string  $id  The identification number
-     * @param  string  $type  The type of ID (NIN, PN, or TN; TIN is accepted as an alias of TN)
+     * @param  string  $type  The type of ID (NIN, PN, or TIN; TN is accepted as well as TIN)
      *
      * @throws InvalidArgumentException If the ID type is invalid and validations are enabled
      */
     public function setId(string $id, string $type): self
     {
-        // The integration guide names the tax number scheme "TN"; "TIN" is
-        // accepted as an alias and sent as "TN".
-        if ($type === 'TIN') {
-            $type = 'TN';
-        }
-
-        $validTypes = ['NIN', 'PN', 'TN'];
+        // "TIN" is the name this SDK has always used for the buyer's tax number;
+        // "TN" is the scheme name of the integration guide. Both are accepted
+        // and kept as supplied; getIdScheme() gives the value that is sent.
+        $validTypes = ['NIN', 'PN', 'TIN', 'TN'];
         if ($this->validationsEnabled && ! in_array($type, $validTypes)) {
             throw new InvalidArgumentException('ID type must be one of: '.implode(', ', $validTypes));
         }
@@ -104,11 +101,21 @@ class CustomerInformation implements ValidatableSection
     }
 
     /**
-     * Get the customer's ID type (NIN, PN or TN)
+     * Get the customer's ID type as it was supplied (NIN, PN, TIN or TN)
      */
     public function getIdType(): ?string
     {
         return $this->idType;
+    }
+
+    /**
+     * Get the scheme sent to JoFotara for the ID type: NIN, PN or TN. The
+     * integration guide names the tax number scheme "TN", so "TIN" is sent as
+     * "TN".
+     */
+    public function getIdScheme(): ?string
+    {
+        return $this->idType === 'TIN' ? 'TN' : $this->idType;
     }
 
     /**
@@ -182,7 +189,7 @@ class CustomerInformation implements ValidatableSection
         // Customer identification - always include with empty values if not set
         $xml[] = '        <cac:PartyIdentification>';
         $xml[] = sprintf('            <cbc:ID schemeID="%s">%s</cbc:ID>',
-            $this->escapeXml($this->idType ?? 'NIN'),
+            $this->escapeXml($this->getIdScheme() ?? 'NIN'),
             $this->escapeXml($this->id ?? '')
         );
         $xml[] = '        </cac:PartyIdentification>';

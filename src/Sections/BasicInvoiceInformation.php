@@ -516,13 +516,22 @@ class BasicInvoiceInformation implements ValidatableSection
             'uuid' => $this->uuid ?? null,
             'issueDate' => isset($this->issueDate) ? $this->issueDate->format('d-m-Y') : null,
             'invoiceType' => $this->invoiceType,
-            'transactionType' => $this->transactionType,
             'paymentMethod' => $this->getPaymentMethod(),
             'note' => $this->note,
             'currency' => $this->currency,
             'invoiceCounter' => $this->invoiceCounter,
             'isCreditInvoice' => $this->isCreditInvoice,
         ];
+
+        // Fields added after the original array shape appear only when used,
+        // so existing callers keep getting the array they know
+        if ($this->transactionType !== 'local') {
+            $data['transactionType'] = $this->transactionType;
+        }
+
+        if ($this->exchangeRate !== null) {
+            $data['exchangeRate'] = $this->exchangeRate;
+        }
 
         if ($this->isCreditInvoice) {
             $data['originalInvoiceId'] = $this->originalInvoiceId;

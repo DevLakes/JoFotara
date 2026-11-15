@@ -425,7 +425,7 @@ class InvoiceLineItem implements ValidatableSection
      */
     public function toArray(): array
     {
-        return [
+        $data = [
             'id' => $this->id,
             'quantity' => $this->quantity ?? null,
             'unitPrice' => $this->unitPrice ?? null,
@@ -434,9 +434,19 @@ class InvoiceLineItem implements ValidatableSection
             'taxCategory' => $this->taxCategory,
             'taxPercent' => $this->taxPercent,
             'unitCode' => $this->unitCode,
-            'specialTax' => $this->specialTax,
-            'consumerPrice' => $this->consumerPrice,
         ];
+
+        // Fields added after the original array shape appear only when used,
+        // so existing callers keep getting the array they know
+        if ($this->specialTax > 0) {
+            $data['specialTax'] = $this->specialTax;
+        }
+
+        if ($this->consumerPrice !== null) {
+            $data['consumerPrice'] = $this->consumerPrice;
+        }
+
+        return $data;
     }
 
     /**

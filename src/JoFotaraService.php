@@ -346,7 +346,7 @@ class JoFotaraService
 
         // Development zone invoices require the buyer's tax number
         if ($this->basicInfo->getTransactionType() === 'development_zone'
-            && ($this->customerInfo->getIdType() !== 'TN' || empty($this->customerInfo->getId()))) {
+            && ($this->customerInfo->getIdScheme() !== 'TN' || empty($this->customerInfo->getId()))) {
             throw new InvalidArgumentException('Customer tax number (ID type TN) is required for development zone invoices');
         }
     }
