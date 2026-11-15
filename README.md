@@ -146,7 +146,16 @@ $invoice->basicInformation()
     ->setExchangeRate(0.709);   // 1 USD = 0.709 JOD; used for this check only, never sent
 ```
 
-Without an exchange rate the SDK cannot tell whether a foreign currency cash invoice is under the threshold, so it requires the buyer name.
+The rate is the number of JOD that one unit of the invoice currency is worth (JOD per unit, not units per JOD) and must be a positive number. The SDK multiplies the invoice total by it and compares the result with 10,000.
+
+| Invoice | Buyer name |
+|---------|------------|
+| Receivable, any currency | Required |
+| Cash in JOD | Required above 10,000 JOD |
+| Cash in a foreign currency, exchange rate set | Required when total x rate is above 10,000 JOD |
+| Cash in a foreign currency, no exchange rate | Required: the SDK cannot tell whether the invoice is under the threshold |
+
+So an exchange rate is needed only for a foreign currency cash invoice that has no buyer name. The same rule applies to credit invoices.
 
 ### Tax Handling
 
@@ -462,7 +471,18 @@ Validation errors throw `InvalidArgumentException` with descriptive messages to 
 
 The buyer's tax number type can be given as `TIN` or as `TN`, the scheme name of the integration guide; both are sent as `TN`.
 
-> **Upgrading:** following the integration guide, the buyer ID must now be digits only for every type (`NIN`, `PN`, `TIN`), the postal code at most 5 digits and the phone 9 to 14 digits. If you were sending alphanumeric passport numbers under `PN`, send the numeric personal number instead.
+### Upgrading
+
+This version follows version 1.5 of the integration guide. No public method or constant was removed, but some behavior is stricter:
+
+- **Buyer ID**: digits only for every type (`NIN`, `PN`, `TIN`). If you were sending alphanumeric passport numbers under `PN`, send the numeric personal number instead.
+- **Buyer postal code and phone**: at most 5 digits, and 9 to 14 digits.
+- **Tax rates**: only 1, 2, 3, 4, 5, 7, 8, 10 and 16 are accepted for the standard category.
+- **`isSuccess()`** is now `false` when the API reports `SUBMITTED` or `ALREADY_SUBMITTED` without a QR code, and `getErrors()` then contains a `QR_CODE_MISSING` error. Code that only checked `isSuccess()` needs no change; code that treated any `SUBMITTED` status as final should rely on `isSuccess()`.
+- **Error codes and categories**: errors for HTTP 500, 504 and other unexpected statuses used to be reported as `API_ERROR` / `API Validation`. They are now `SERVER_ERROR` / `Server Error`, `GATEWAY_TIMEOUT` / `Gateway Timeout` and `HTTP_ERROR` / `HTTP`. Messages and the handling of 400 and 403 are unchanged.
+- **Generated XML**: the invoice now carries `<cbc:ProfileID>reporting:1.0</cbc:ProfileID>`, the buyer's tax number scheme is sent as `TN`, and special sales lines carry the special tax subtotal.
+
+The SDK has been validated with its automated test suite against the guide's examples; it has not been verified against the live JoFotara API as part of this change.
 
 ### Bypassing Validations
 
